@@ -39,6 +39,8 @@ function U = soop_viewer_util()
     U.phoff_prep = @phoff_prep;
     U.phoff_title = @phoff_title;
     U.freeze_spans = @freeze_spans;
+    U.snowfall_mask = @snowfall_mask;
+    U.snowfall_usable = @snowfall_usable;
     U.wx_axis_cfg = @wx_axis_cfg;
     U.wx_axes_plan = @wx_axes_plan;
     U.snrcut_usable = @snrcut_usable;
@@ -989,6 +991,50 @@ function spans = freeze_spans(t, y)
     is_start = hot & ([true; ~hot(1:end-1)] | gap);
     is_end   = hot & [~hot(2:end) | gap(2:end); true];
     spans = [t(is_start) - dt/2, t(is_end) + dt/2];
+end
+
+
+function [wet, cold] = snowfall_mask(t, airtc, swe, depth)
+% Per-sample snowfall classes for the within-run scatter shading, returned
+% as 1 / 0 / NaN columns aligned with t (NaN = not classifiable), ready for
+% freeze_spans. A sample is snowing when SWE (mm w.e.) gains >=
+% SNOWFALL_SWE_MIN_MM AND depth (m) gains >= SNOWFALL_DEPTH_MIN_M across
+% the centered SNOWFALL_WINDOW_H window (linear interpolation over finite
+% samples). Requiring both separates snowfall from rain absorbed by the
+% pack (SWE rises, depth does not). wet: snowing and |airtc| <=
+% SNOWFALL_WET_ABS_C (deg C); cold: snowing and airtc < -SNOWFALL_WET_ABS_C.
+% Duplicate timestamps keep their first sample.
+    C = SoopViewerState;
+    t = t(:);  airtc = airtc(:);  swe = swe(:);  depth = depth(:);
+    half = hours(C.SNOWFALL_WINDOW_H / 2);
+    dswe = gain(swe);
+    ddep = gain(depth);
+    snowing = (dswe >= C.SNOWFALL_SWE_MIN_MM) & (ddep >= C.SNOWFALL_DEPTH_MIN_M);
+    known = isfinite(airtc) & isfinite(dswe) & isfinite(ddep);
+    wet  = double(snowing & abs(airtc) <= C.SNOWFALL_WET_ABS_C);
+    cold = double(snowing & airtc < -C.SNOWFALL_WET_ABS_C);
+    wet(~known)  = NaN;
+    cold(~known) = NaN;
+
+    function d = gain(y)
+        d = nan(size(t));
+        ok = isfinite(y) & ~isnat(t);
+        [tu, iu] = unique(t(ok), 'stable');
+        yu = y(ok);  yu = yu(iu);
+        [tu, o] = sort(tu);  yu = yu(o);
+        if numel(tu) < 2, return; end
+        d = interp1(tu, yu, t + half, 'linear', NaN) - ...
+            interp1(tu, yu, t - half, 'linear', NaN);
+    end
+end
+
+
+function ok = snowfall_usable(WX)
+% True when the weather table can drive the snowfall shading: finite AirTC,
+% SWE and snow depth somewhere in the table.
+    has = @(c) ismember(c, WX.Properties.VariableNames) && any(isfinite(WX.(c)));
+    ok = ~isempty(WX) && istable(WX) && has('airtc_c') && ...
+         has('swe_mm') && has('depth_m');
 end
 
 

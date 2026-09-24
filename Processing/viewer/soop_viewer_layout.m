@@ -145,12 +145,12 @@ function soop_viewer_layout(V)
 
     S.panel = uipanel(r3);   % plots (tiledlayout rebuilt per render)
 
-    info_gl = uigridlayout(r3, [36 1]);
-    % Rows 27/28 (geometry toggles, footprint-map controls) are two-line
+    % Rows 30/31 (geometry toggles, footprint-map controls) are two-line
     % sub-grids — 56 px so both lines fit inside the ~240 px side panel.
-    % The 28 px control rows are children 1-26 (the run of 28s below), so a
+    % The 28 px control rows are children 1-29 (the run of 28s below), so a
     % new control row's height entry must be inserted BEFORE the two 56s.
-    info_gl.RowHeight  = {28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 56, 56, 22, 150, 22, 250, 22, 60, 22, 'fit'};
+    info_gl = uigridlayout(r3, [39 1]);
+    info_gl.RowHeight  = [repmat({28}, 1, 29), {56, 56, 22, 150, 22, 250, 22, 60, 22, 'fit'}];
     info_gl.Padding    = [6 6 6 6];
     info_gl.Scrollable = 'on';   % side panel can scroll if content is tall
     % Title / X-label / Y-label override rows — text field + Set button. Empty
@@ -487,6 +487,48 @@ function soop_viewer_layout(V)
     S.ovf_row = ovf_row;
     S.ovf_row.Visible = 'off';
 
+    % Within-run scatter: minimum captures a run must keep (after the SNR
+    % cutoff and overflow exclusion) for its circular std to be plotted.
+    minrun_row = uigridlayout(info_gl, [1 2]);
+    minrun_row.ColumnWidth = {'fit', 60};
+    minrun_row.Padding = [0 0 0 0];
+    minrun_row.ColumnSpacing = 4;
+    uilabel(minrun_row, 'Text', 'Min captures/run', 'FontWeight', 'bold');
+    S.sp_minrun = uispinner(minrun_row, 'Limits', [1 30], 'Step', 1, ...
+        'Value', SoopViewerState.WRSCATTER_MIN_CAPTURES, ...
+        'ValueDisplayFormat', '%d', ...
+        'Tooltip', ['Runs keeping fewer captures after the SNR cutoff and ' ...
+                    'overflow exclusion are not plotted (a 1-capture run has ' ...
+                    'a std of 0).'], ...
+        'ValueChangedFcn', @(~,~) V.CB.refresh(V));
+    S.minrun_row = minrun_row;
+    S.minrun_row.Visible = 'off';
+
+    % Within-run scatter snowfall shading (rule and thresholds: the
+    % SNOWFALL_* constants in SoopViewerState) and the wind-speed panel.
+    snowfall_row = uigridlayout(info_gl, [1 2]);
+    snowfall_row.ColumnWidth = {'fit', 'fit'};
+    snowfall_row.Padding = [0 0 0 0];
+    S.cb_wetsnow = uicheckbox(snowfall_row, 'Text', 'Wet snowfall', 'Value', false, ...
+        'Tooltip', sprintf(['Shade times SWE AND snow depth are both rising and ' ...
+                    '|AirTC| <= %g %sC.'], SoopViewerState.SNOWFALL_WET_ABS_C, char(176)), ...
+        'ValueChangedFcn', @(~,~) V.CB.refresh(V));
+    S.cb_coldsnow = uicheckbox(snowfall_row, 'Text', 'Cold snowfall', 'Value', false, ...
+        'Tooltip', sprintf(['Shade times SWE AND snow depth are both rising and ' ...
+                    'AirTC < -%g %sC.'], SoopViewerState.SNOWFALL_WET_ABS_C, char(176)), ...
+        'ValueChangedFcn', @(~,~) V.CB.refresh(V));
+    S.snowfall_row = snowfall_row;
+    S.snowfall_row.Visible = 'off';
+
+    wind_row = uigridlayout(info_gl, [1 1]);
+    wind_row.Padding = [0 0 0 0];
+    S.cb_wind = uicheckbox(wind_row, 'Text', 'Wind speed', 'Value', false, ...
+        'Tooltip', ['Mean wind speed panel (m/s). A flat 0 during a storm ' ...
+                    'usually means an iced anemometer, not calm air.'], ...
+        'ValueChangedFcn', @(~,~) V.CB.refresh(V));
+    S.wind_row = wind_row;
+    S.wind_row.Visible = 'off';
+
     % Theoretical phase-from-SWE overlay (candidate control block, directly
     % after the SNR cutoff — NOT the calibration snr_row above). Checkbox
     % draws the snow-scale SWE record converted to differential phase (the
@@ -536,7 +578,8 @@ function soop_viewer_layout(V)
     S.cb_hourcolor = uicheckbox(hour_row, 'Text', 'Color by hour', 'Value', false, ...
         'Tooltip', ['Color each displayed point by its nearest hour of day ' ...
                     '(capture timebase; cyclic colormap). Available when ' ...
-                    'aggregation is Raw captures or Per-run mean; on the ' ...
+                    'aggregation is Raw captures or Per-run mean (always on the ' ...
+                    'within-run scatter); on the ' ...
                     'candidates views the daily filter must also be off.'], ...
         'ValueChangedFcn', @(~,~) V.CB.on_pointcolor(V, 'hour'));
     S.hour_row = hour_row;

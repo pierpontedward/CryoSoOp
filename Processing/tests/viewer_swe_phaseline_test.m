@@ -1148,9 +1148,9 @@ function test_style_layout_and_gating(tc)
     g = V.style_row.Parent;
     verifyEqual(tc, V.style_row.Layout.Row, ...
                 V.dd_legend.Parent.Layout.Row + 1);
-    verifyNumElements(tc, g.RowHeight, 36);
-    verifyEqual(tc, [g.RowHeight{1:26}], repmat(28, 1, 26));
-    verifyEqual(tc, [g.RowHeight{27:28}], [56 56]);
+    verifyNumElements(tc, g.RowHeight, 39);
+    verifyEqual(tc, [g.RowHeight{1:29}], repmat(28, 1, 29));
+    verifyEqual(tc, [g.RowHeight{30:31}], [56 56]);
 
     % The new modifier is directly under Daily capture nearest. It appears
     % only for the four MUOS Candidates plots and is selectable only while

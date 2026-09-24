@@ -37,6 +37,21 @@ classdef SoopViewerState < handle
         % Spinner travel, wide enough for any seasonal snowpack while keeping
         % the pair physically meaningful.
         DTC_CLIM_RANGE_C = [-40 20];
+        % Within-run scatter snowfall shading. A 15-min weather sample is
+        % "snowing" when SWE gains >= SNOWFALL_SWE_MIN_MM (mm w.e.) AND SNOdar
+        % depth gains >= SNOWFALL_DEPTH_MIN_M (m) across the centered window
+        % SNOWFALL_WINDOW_H (h). It is "wet" snowfall when |AirTC| <=
+        % SNOWFALL_WET_ABS_C (deg C) and "cold" snowfall when AirTC <
+        % -SNOWFALL_WET_ABS_C; warmer accumulation is left unshaded.
+        SNOWFALL_WINDOW_H    = 2;
+        SNOWFALL_SWE_MIN_MM  = 2;
+        SNOWFALL_DEPTH_MIN_M = 0.02;
+        SNOWFALL_WET_ABS_C   = 1.0;
+        % Within-run scatter: default minimum captures a run must keep (after
+        % the SNR cutoff / overflow exclusion) to plot a circular std.
+        WRSCATTER_MIN_CAPTURES = 10;
+        % Within-run scatter: Pt x value applied when the view is opened.
+        WRSCATTER_PT_SCALE = 3;
     end
 
     properties
@@ -167,6 +182,13 @@ classdef SoopViewerState < handle
         phline_row
         sp_snrcut
         snrcut_row
+        sp_minrun
+        minrun_row
+        cb_wetsnow
+        cb_coldsnow
+        snowfall_row
+        cb_wind
+        wind_row
         cb_ovf
         ovf_row
         cb_theory

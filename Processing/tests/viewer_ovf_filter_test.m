@@ -374,6 +374,79 @@ function test_render_hourcolor_fallback_marker(tc)
     verifyEqual(tc, h.YData(:), 40, 'AbsTol', 1e-9);
 end
 
+function T = l1_runs_table(tc)
+    % Two 3-capture runs 2 h apart. Run 1 phases {0, 0, 90}: std > 0 with
+    % the 90 deg capture, 0 without it. Run 2 phases {10, 10, 10}: std 0.
+    t = tc.TestData.t0 + [seconds([0 10 20]), hours(2) + seconds([0 10 20])]';
+    T = table(t, "cap_" + string((1:6)'), [0; 0; 90; 10; 10; 10], ...
+              'VariableNames', {'timestamp', 'base_name', 'peak_phase_deg'});
+end
+
+function sd = wrscatter_ydata(V)
+    ax = findobj(V.panel, 'Type', 'axes');
+    h  = findobj(ax, 'Type', 'line');
+    sd = h(end).YData(:);
+end
+
+function test_wrscatter_exclusion(tc)
+    % Within-run scatter: checked + usable list drops cap_3 before the run
+    % std, so run 1 collapses to 0 deg;
+    % unchecked keeps it. y-label names the plotted statistic.
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_runs_table(tc);
+    V.OVF = "cap_3";  V.OVF_ok = true;
+    V.dp1.Value = tc.TestData.t0;
+    V.dp2.Value = tc.TestData.t0 + days(1);
+    V.dd_domain.Value = 'sinc';
+    V.sp_minrun.Value = 1;
+    V.cb_ovf.Value = false;
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    sd = wrscatter_ydata(V);
+    verifyGreaterThan(tc, sd(1), 1);
+    verifyEqual(tc, sd(2), 0, 'AbsTol', 1e-6);
+    V.cb_ovf.Value = true;
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    verifyEqual(tc, wrscatter_ydata(V), [0; 0], 'AbsTol', 1e-6);
+    ax = findobj(V.panel, 'Type', 'axes');
+    verifyEqual(tc, ax(end).YLabel.String, 'Within-run phase spread (deg)');
+end
+
+function test_wrscatter_checked_without_list_never_filters(tc)
+    % Checked box with no list found: nothing is dropped.
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_runs_table(tc);
+    V.OVF = "cap_3";  V.OVF_ok = false;
+    V.dp1.Value = tc.TestData.t0;
+    V.dp2.Value = tc.TestData.t0 + days(1);
+    V.dd_domain.Value = 'sinc';
+    V.sp_minrun.Value = 1;
+    V.cb_ovf.Value = true;
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    sd = wrscatter_ydata(V);
+    verifyGreaterThan(tc, sd(1), 1);
+end
+
+function test_render_now_wrscatter_row_and_enable(tc)
+    % CB.render_now on the within-run scatter shows the overflow row and
+    % gates Enable on the L1 table's base_name + a found list.
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_runs_table(tc);
+    V.dp1.Value = tc.TestData.t0;
+    V.dp2.Value = tc.TestData.t0 + days(1);
+    V.dd_plot.Value = 'L1: Within-run phase scatter';
+    V.CB.render_now(V);
+    verifyTrue(tc, logical(V.ovf_row.Visible));
+    verifyFalse(tc, logical(V.cb_ovf.Enable));
+    verifyTrue(tc, contains(V.cb_ovf.Tooltip, 'No overflow list found'));
+    V.OVF_ok = true;  V.OVF_src = "X:\fake\overflow_timestamps.txt";
+    V.CB.render_now(V);
+    verifyTrue(tc, logical(V.cb_ovf.Enable));
+    verifyTrue(tc, contains(V.cb_ovf.Tooltip, 'overflow_timestamps.txt'));
+end
+
 function test_render_now_enable_and_tooltip(tc)
     % CB.render_now integration: each Enable state names its own cause in
     % the tooltip — missing list, unusable base_name, then the resolved

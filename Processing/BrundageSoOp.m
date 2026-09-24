@@ -83,6 +83,10 @@ end
 if isfield(site.weather, 'wx_swe_cols') && ~isempty(site.weather.wx_swe_cols)
     cfg.wx_swe_cols = reshape(site.weather.wx_swe_cols, 1, []);
 end
+% wx_wind_col is the mean wind-speed header (m/s) for the within-run scatter.
+if isfield(site.weather, 'wx_wind_col') && ~isempty(site.weather.wx_wind_col)
+    cfg.wx_wind_col = site.weather.wx_wind_col;
+end
 % Digital Temperature Cable configuration. Sensor 1 is cable top and the last
 % sensor is cable bottom; spacing and bottom height are centimeters. The
 % bottom height is negative when the lowest sensors are buried in the soil.

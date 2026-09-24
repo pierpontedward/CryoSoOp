@@ -51,6 +51,21 @@ function on_pointcolor(V, which)
 end
 
 
+function s = ovf_src_note(S, ovf_ok, product)
+% Overflow-checkbox tooltip suffix. Each disabled state names its own cause
+% (fail-visible): a missing list and an unusable product schema need
+% different operator fixes. product names the table the filter reads.
+    if ~S.OVF_ok
+        s = 'No overflow list found (run find_overflows).';
+    elseif ~ovf_ok
+        s = ['Disabled: the loaded ' product ' product has no usable ' ...
+             'base_name column (regenerate it). Source: ' char(S.OVF_src)];
+    else
+        s = ['Source: ' char(S.OVF_src)];
+    end
+end
+
+
 function set_family_rows(V, is_cand, is_candidate_plot)
 % Show/hide the satellite-candidates-family controls: the row-1 weather
 % checkboxes and the side-panel daily/phaseLine/SNR/overflow/theory/
@@ -372,6 +387,12 @@ function render_now(V)
         S.ov_title = '';  S.ov_xlabel = '';  S.ov_ylabel = '';
         S.ov_plot_kind = kind;
         S.ef_title.Value = '';  S.ef_xlabel.Value = '';  S.ef_ylabel.Value = '';
+        % Within-run scatter opens with no weather panels and enlarged run
+        % points; the user's choices then persist until the view changes.
+        if strcmp(kind, 'L1: Within-run phase scatter')
+            set([S.cb_depth, S.cb_swe, S.cb_airtc, S.cb_tempc, S.cb_wind], 'Value', false);
+            S.sp_ptsz.Value = S.WRSCATTER_PT_SCALE;
+        end
     end
 
     % Grey out controls that don't affect this plot (Enable, not Visible,
@@ -466,6 +487,11 @@ function render_now(V)
     is_elev = strcmp(kind, 'L2: Satellite elevation');
     S.hour_row.Visible = matlab.lang.OnOffSwitchState(is_cand || is_elev);
 
+    % Line x / Pt x spinners also serve the within-run scatter: Pt x scales
+    % the run points, Line x the weather-panel lines.
+    is_wrscatter = strcmp(kind, 'L1: Within-run phase scatter');
+    S.style_row.Visible = matlab.lang.OnOffSwitchState(is_cand || is_wrscatter);
+
     if is_cand
         % These overlay panels draw ONE phase column, so the multi-domain
         % 'Compare all' selection is meaningless here — snap the dropdown to
@@ -497,22 +523,39 @@ function render_now(V)
         % list so the active source is visible (fail-visible when disabled).
         ovf_ok = V.U.ovf_usable(S.CAND, S.OVF_ok);
         S.cb_ovf.Enable = matlab.lang.OnOffSwitchState(ovf_ok);
-        % Each disabled state names its own cause (fail-visible): a missing
-        % list and an unusable product schema need different operator fixes.
-        if ~S.OVF_ok
-            src_note = 'No overflow list found (run find_overflows).';
-        elseif ~ovf_ok
-            src_note = ['Disabled: the loaded candidate product has no ' ...
-                        'usable base_name column (regenerate it). Source: ' ...
-                        char(S.OVF_src)];
-        else
-            src_note = ['Source: ' char(S.OVF_src)];
-        end
         S.cb_ovf.Tooltip = ['Drop overflow-flagged captures (find_overflows ' ...
             'list) from the candidate selection before the daily pick; ' ...
             'unchecked leaves them in and marks them as red ''Overflow'' ' ...
             'points (Raw captures; aggregated modes note the included count ' ...
-            'in the title). ' src_note];
+            'in the title). ' ovf_src_note(S, ovf_ok, 'candidate')];
+    end
+
+    % The within-run scatter shares the overflow checkbox, SNR cutoff,
+    % color-by-SNR and the depth / SWE / temperature weather toggles with
+    % the candidates family, plus its own minimum-captures, snowfall-shading
+    % and wind rows. Flagged captures (same find_overflows list, matched on
+    % the L1 base_name column) are dropped before each run's circular std.
+    set([S.minrun_row, S.snowfall_row, S.wind_row], 'Visible', ...
+        matlab.lang.OnOffSwitchState(is_wrscatter));
+    if is_wrscatter
+        set([S.ovf_row, S.snrcut_row, S.snrcolor_row, S.hour_row], 'Visible', 'on');
+        S.cb_hourcolor.Enable = 'on';   % one point per run: hour always defined
+        set([S.cb_depth, S.cb_swe, S.cb_airtc, S.cb_tempc], 'Visible', 'on');
+        snr_ok = V.U.snrcut_usable(S.L1);
+        S.sp_snrcut.Enable = matlab.lang.OnOffSwitchState(snr_ok);
+        S.cb_snrcolor.Enable = matlab.lang.OnOffSwitchState(snr_ok);
+        % Snowfall shading reads AirTC, SWE and snow depth.
+        wx_ok = V.U.snowfall_usable(S.WX);
+        set([S.cb_wetsnow, S.cb_coldsnow], 'Enable', ...
+            matlab.lang.OnOffSwitchState(wx_ok));
+        S.cb_wind.Enable = matlab.lang.OnOffSwitchState( ...
+            ~isempty(S.WX) && ismember('wind_ms', S.WX.Properties.VariableNames) && ...
+            any(isfinite(S.WX.wind_ms)));
+        ovf_ok = V.U.ovf_usable(S.L1, S.OVF_ok);
+        S.cb_ovf.Enable = matlab.lang.OnOffSwitchState(ovf_ok);
+        S.cb_ovf.Tooltip = ['Drop overflow-flagged captures (find_overflows ' ...
+            'list) before each run''s circular std is computed. ' ...
+            ovf_src_note(S, ovf_ok, 'L1')];
     end
 
     % Expand the RFI control row for both season RFI views. The interactive

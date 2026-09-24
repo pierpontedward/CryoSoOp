@@ -114,6 +114,10 @@ function render_l1(V, kind)
         return;
     end
     S.last_n = height(T);
+    if strcmp(kind, 'L1: Within-run phase scatter')
+        render_wrscatter(V, T, t0, t1);
+        return;
+    end
     t   = tcol(T);
     agg = S.dd_agg.Value;
     tl  = tiledlayout(S.panel, 1, 1);
@@ -193,21 +197,6 @@ function render_l1(V, kind)
                 ylabel(ax, 'Circular mean phase \pm circ. std (deg)');
                 title(ax, ['Diurnal phase pattern (melt-freeze cycling)' domain_suffix()]);
             end
-        case 'L1: Within-run phase scatter'
-            grp = M.run_groups(t);
-            t_run = splitapply(@min, t, grp);
-            [cols, labs] = domain_cols(T, 'peak_phase_deg', 'peak_phase_deg_fd', ...
-                                       'peak_phase_deg_fd_muos');
-            hold(ax, 'on');
-            hh = gobjects(numel(cols), 1);
-            for ii = 1:numel(cols)
-                sd_run = splitapply(@(x) M.second_out(M.circ_stats, x), T.(cols{ii}), grp);
-                hh(ii) = plot(ax, t_run, sd_run, '.', 'Color', domain_color(labs{ii}));
-            end
-            hold(ax, 'off');
-            if numel(cols) > 1, legend(hh, labs, 'Location', 'best'); end
-            ylabel(ax, 'Phase offset (deg)');
-            title(ax, ['Within-run phase scatter (15 captures / 2-hourly run)' domain_suffix()]);
         case 'L1: Peak-bin vs elevation (QA)'
             if isempty(S.L2)
                 show_msg('Needs BrundageSoOp_L2.csv (run compute_L2) for elevation.');
@@ -282,4 +271,233 @@ function render_l1(V, kind)
             end
     end
     grid(ax, 'on');
+end
+
+
+function render_wrscatter(V, T, t0, t1)
+% Within-run phase scatter: circular std (deg) of each 2-hourly run's
+% captures, one point per run at the run start. Captures are filtered
+% (SNR cutoff, overflow exclusion) before runs are grouped, and runs keeping
+% fewer than the minimum captures are hidden. Optional stacked weather
+% panels (depth / SWE, temperatures, wind) share the linked time axis, and
+% wet / cold snowfall spans shade every panel.
+    S = V;
+    M = V.M;
+    tcol = V.U.tcol;
+    show_msg = @(varargin) V.U.show_msg(V, varargin{:});
+    domain_suffix = @(varargin) V.U.domain_suffix(V, varargin{:});
+    domain_cols = @(varargin) V.U.domain_cols(V, varargin{:});
+    domain_color = V.U.domain_color;
+    C = SoopViewerState;
+
+    %% Capture filters (SNR cutoff, overflow exclusion)
+    snr_cut = S.sp_snrcut.Value;
+    [T, snr_ok] = V.U.snrcut_apply(T, snr_cut);
+    if S.cb_ovf.Value && V.U.ovf_usable(T, S.OVF_ok)
+        T = T(~V.U.ovf_mask(T, S.OVF), :);
+    end
+    if isempty(T)
+        show_msg('No captures in the selected range pass the SNR / overflow filters.');
+        return;
+    end
+
+    %% Runs and per-run statistics
+    t = tcol(T);
+    grp = M.run_groups(t);
+    t_run = splitapply(@min, t, grp);
+    n_run = splitapply(@numel, t, grp);
+    keep = n_run >= S.sp_minrun.Value;
+    if ~any(keep)
+        show_msg(sprintf('No run keeps >= %d captures after the filters.', ...
+                         S.sp_minrun.Value));
+        return;
+    end
+    [cols, labs] = domain_cols(T, 'peak_phase_deg', 'peak_phase_deg_fd', ...
+                               'peak_phase_deg_fd_muos');
+    % Point coloring: nearest hour of day of the run start (capture clock),
+    % or median run SNR (dB) of the kept captures. The two are mutually
+    % exclusive (on_pointcolor); hour wins if both are somehow set.
+    hour_on = S.cb_hourcolor.Value;
+    snr_on  = S.cb_snrcolor.Value && ~hour_on && V.U.snrcut_usable(T);
+    if hour_on
+        cval = V.U.hour_bins(t_run) + 0.5;
+    elseif snr_on
+        cval = splitapply(@(x) median(x, 'omitnan'), T.snr_db, grp);
+    end
+    color_on = hour_on || snr_on;
+
+    %% Weather panels and snowfall shading requested
+    WX = S.WX;
+    has_wx = @(c) ~isempty(WX) && istable(WX) && ...
+                  ismember(c, WX.Properties.VariableNames);
+    if has_wx('timestamp')
+        TW = WX(tcol(WX) >= t0 & tcol(WX) < t1, :);
+    else
+        TW = table();
+    end
+    fin = @(c) has_wx(c) && ~isempty(TW) && any(isfinite(TW.(c)));
+    show_dep  = S.cb_depth.Value && fin('depth_m');
+    show_swe  = S.cb_swe.Value   && fin('swe_mm');
+    show_air  = S.cb_airtc.Value && fin('airtc_c');
+    show_tmp  = S.cb_tempc.Value && fin('temp_c');
+    show_wind = S.cb_wind.Value  && fin('wind_ms');
+    shade_ok  = V.U.snowfall_usable(WX);
+    want_wet  = S.cb_wetsnow.Value  && shade_ok;
+    want_cold = S.cb_coldsnow.Value && shade_ok;
+    tiles = {};
+    if show_dep || show_swe, tiles{end+1} = 'snow'; end
+    if show_air || show_tmp, tiles{end+1} = 'temp'; end
+    if show_wind,            tiles{end+1} = 'wind'; end
+
+    % Shading spans from the FULL weather table (the centered accumulation
+    % window stays valid at the range edges), clipped to the range.
+    spans_wet = NaT(0, 2);  spans_cold = NaT(0, 2);
+    if want_wet || want_cold
+        [wet, cold] = V.U.snowfall_mask(tcol(WX), WX.airtc_c, ...
+            col_or_nan(WX, 'swe_mm'), col_or_nan(WX, 'depth_m'));
+        spans_wet  = clip_spans(V.U.freeze_spans(tcol(WX), wet),  t0, t1);
+        spans_cold = clip_spans(V.U.freeze_spans(tcol(WX), cold), t0, t1);
+    end
+    c_wet  = [0.00 0.45 0.74];
+    c_cold = [0.49 0.18 0.56];
+
+    %% Top panel: within-run circular std
+    tl = tiledlayout(S.panel, 2 + numel(tiles), 1, 'TileSpacing', 'compact');
+    ax = nexttile(tl, [2 1]);
+    hold(ax, 'on');
+    [lh, leg] = shade(ax, want_wet, want_cold);
+    mk = {'o', 's', '^'};
+    hh = gobjects(numel(cols), 1);
+    for ii = 1:numel(cols)
+        sd_run = splitapply(@(x) M.second_out(M.circ_stats, x), T.(cols{ii}), grp);
+        if color_on
+            hh(ii) = scatter(ax, t_run(keep), sd_run(keep), 16, cval(keep), ...
+                             'filled', 'Marker', mk{ii});
+        else
+            hh(ii) = plot(ax, t_run(keep), sd_run(keep), '.', ...
+                          'Color', domain_color(labs{ii}));
+        end
+    end
+    hold(ax, 'off');
+    % Pt x sidebar spinner scales the run points (Line x is disabled for
+    % this view); x1 leaves MATLAB's default marker size unchanged.
+    F = V.U.style_factors(S.sp_linew.Value, S.sp_ptsz.Value);
+    if color_on
+        V.U.style_apply(F, gobjects(0), gobjects(0), hh);
+        cb = colorbar(ax);
+        cb.Layout.Tile = 'east';   % layout-level: keeps all panels x-aligned
+        if hour_on
+            colormap(ax, hsv(24));   % cyclic map for the cyclic hour
+            clim(ax, [0 24]);
+            cb.Ticks = (0:4:20) + 0.5;   % bin centers — there is no hour 24
+            cb.TickLabels = compose('%d', 0:4:20);
+            cb.Label.String = 'Run start hour (capture clock)';
+        else
+            colormap(ax, parula);
+            s_fin = cval(keep & isfinite(cval));
+            lo = snr_cut;
+            if ~snr_ok, lo = min(s_fin); end
+            hi = max(s_fin);
+            if isempty(hi) || hi <= lo, hi = lo + 1; end
+            clim(ax, [lo hi]);
+            cb.Label.String = 'Median run SNR [dB]';
+        end
+    else
+        V.U.style_apply(F, gobjects(0), hh, gobjects(0));
+    end
+    if numel(cols) > 1 || ~isempty(lh)
+        legend(ax, [hh(:); lh(:)], [labs(:); leg(:)], 'Location', 'best');
+    end
+    ylabel(ax, 'Within-run phase spread (deg)');   % circular std of the run's captures
+    title(ax, ['Within-run phase scatter (15 captures / 2-hourly run)' domain_suffix()]);
+    grid(ax, 'on');
+    axs = ax;
+    wl = gobjects(0);   % weather lines, scaled by Line x
+
+    %% Weather panels (15-min station record)
+    for k = 1:numel(tiles)
+        axw = nexttile(tl);
+        hold(axw, 'on');
+        shade(axw, want_wet, want_cold);
+        switch tiles{k}
+            case 'snow'
+                if show_dep && show_swe, yyaxis(axw, 'left'); end
+                if show_dep
+                    R = V.U.wx_axis_cfg('depth', TW.depth_m);
+                    wl(end+1) = plot(axw, tcol(TW), TW.depth_m, '-', 'Color', R.color); %#ok<AGROW>
+                    ylabel(axw, R.label);
+                    axw.YColor = R.color;
+                end
+                if show_dep && show_swe, yyaxis(axw, 'right'); end
+                if show_swe
+                    R = V.U.wx_axis_cfg('swe', TW.swe_mm);
+                    wl(end+1) = plot(axw, tcol(TW), TW.swe_mm, '-', 'Color', R.color); %#ok<AGROW>
+                    ylabel(axw, R.label);
+                    if show_dep, axw.YAxis(2).Color = R.color; else, axw.YColor = R.color; end
+                end
+            case 'temp'
+                wxlab = V.U.wx_temp_labels(V.cfg);
+                esc = @(s) strrep(s, '_', '\_');
+                ht = gobjects(0);  lt = {};
+                if show_air
+                    ht(end+1) = plot(axw, tcol(TW), TW.airtc_c, '-', 'Color', [0.17 0.63 0.17]); %#ok<AGROW>
+                    lt{end+1} = esc(wxlab{1}); %#ok<AGROW>
+                end
+                if show_tmp
+                    ht(end+1) = plot(axw, tcol(TW), TW.temp_c, '-', 'Color', [0.49 0.18 0.56]); %#ok<AGROW>
+                    lt{end+1} = esc(wxlab{2}); %#ok<AGROW>
+                end
+                wl = [wl, ht]; %#ok<AGROW>
+                yline(axw, 0, 'k--');   % 0 degC melt-freeze threshold
+                ylabel(axw, ['Temp (' char(176) 'C)']);
+                legend(axw, ht, lt, 'Location', 'best');
+            case 'wind'
+                wl(end+1) = plot(axw, tcol(TW), TW.wind_ms, '-', 'Color', [0.30 0.30 0.30]); %#ok<AGROW>
+                ylabel(axw, 'Wind (m/s)');
+        end
+        hold(axw, 'off');
+        grid(axw, 'on');
+        axs(end+1) = axw; %#ok<AGROW>
+    end
+    V.U.style_apply(F, wl, gobjects(0), gobjects(0));
+    set(axs(1:end-1), 'XTickLabel', {});   % dates on the bottom panel only
+    linkaxes(axs, 'x');
+    if t1 > t0, xlim(ax, [t0 t1]); end
+
+    function [lh_s, leg_s] = shade(a, on_wet, on_cold)
+        % Wet / cold snowfall spans behind the data on axes a.
+        lh_s = gobjects(0);  leg_s = {};
+        if on_wet && ~isempty(spans_wet)
+            hr = xregion(a, spans_wet(:, 1), spans_wet(:, 2), 'FaceColor', c_wet, ...
+                         'FaceAlpha', 0.15, 'Layer', 'bottom');
+            lh_s(end+1) = hr(1);
+            leg_s{end+1} = sprintf('Wet snowfall (|AirTC| %s %g%sC)', char(8804), ...
+                                   C.SNOWFALL_WET_ABS_C, char(176));
+        end
+        if on_cold && ~isempty(spans_cold)
+            hr = xregion(a, spans_cold(:, 1), spans_cold(:, 2), 'FaceColor', c_cold, ...
+                         'FaceAlpha', 0.12, 'Layer', 'bottom');
+            lh_s(end+1) = hr(1);
+            leg_s{end+1} = sprintf('Cold snowfall (AirTC < -%g%sC)', ...
+                                   C.SNOWFALL_WET_ABS_C, char(176));
+        end
+    end
+end
+
+
+function y = col_or_nan(T, c)
+% Column c of table T, or an all-NaN column when absent.
+    if ismember(c, T.Properties.VariableNames)
+        y = T.(c);
+    else
+        y = nan(height(T), 1);
+    end
+end
+
+
+function sp = clip_spans(sp, t0, t1)
+% [start end] datetime spans clipped to [t0, t1]; spans outside dropped.
+    sp = sp(sp(:, 2) > t0 & sp(:, 1) < t1, :);
+    sp(:, 1) = max(sp(:, 1), t0);
+    sp(:, 2) = min(sp(:, 2), t1);
 end

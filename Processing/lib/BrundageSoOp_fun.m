@@ -398,7 +398,7 @@ end
 function WX = load_snodar(cfg)
 % Load and clean the Brundage weather station SNOdar data from a Campbell TOA5 file.
 % Returns a table with columns {timestamp (datetime), depth_m, airtc_c, temp_c,
-% swe_mm, dtc_c, soil_vwc}. dtc_c is rows by sensors in configured cable order,
+% swe_mm, wind_ms, dtc_c, soil_vwc}. dtc_c is rows by sensors in configured cable order,
 % deg C; soil_vwc is rows by rod positions in configured order, m^3/m^3.
 % The two temperature columns (cfg.wx_temp_cols, default AirTC_Avg / Temp_C_Avg)
 % feed the viewer's toggleable SNOdar-overlay temperature lines — or, with the
@@ -407,6 +407,8 @@ function WX = load_snodar(cfg)
 % SS_SWE_ErrCode_Avg; mm water column) feeding the viewer's SWE overlay line —
 % error-code-masked (fail closed), spike-filtered. Depth reads cfg.wx_depth_cols
 % {distance, snow_depth} (defaults SnoDAR_distance_Avg / SnoDAR_snow_depth_Avg);
+% wind_ms is the anemometer's mean wind speed (cfg.wx_wind_col, default
+% WS_ms_S_WVT; m/s, unfiltered — an iced sensor reads a flat 0).
 % soil_vwc reads cfg.wx_soil_vwc_cols (see soil_column_names). Every sensor is
 % optional and independent: a missing header NaN-fills only its own column, so
 % one absent sensor never blocks the rest of the file from loading. The
@@ -488,6 +490,14 @@ function WX = load_snodar(cfg)
         end
         swe_col    = find(hdr == string(swe_cols{1}), 1);
         sweerr_col = find(hdr == string(swe_cols{2}), 1);
+
+        % Wind speed (m/s) for the viewer's within-run scatter — optional
+        % sensor; a missing header leaves wind_ms all-NaN silently.
+        wind_name = 'WS_ms_S_WVT';
+        if isfield(cfg, 'wx_wind_col') && ~isempty(cfg.wx_wind_col)
+            wind_name = char(cfg.wx_wind_col);
+        end
+        wind_col = find(hdr == string(wind_name), 1);
 
         % DTC headers are optional. Their configured order is physical cable
         % order — sensor 1 at cable top, last sensor at cable bottom. The
@@ -584,6 +594,13 @@ function WX = load_snodar(cfg)
             end
         end
 
+        if isempty(wind_col)
+            wind_num = nan(n_rows, 1);
+        else
+            wind_num = str2double(strtrim(data(:, wind_col)));
+            wind_num(~isfinite(wind_num)) = NaN;
+        end
+
         dtc_num = nan(n_rows, numel(dtc_names));
         for dk = 1:numel(dtc_names)
             if dtc_col(dk) ~= 0
@@ -616,6 +633,7 @@ function WX = load_snodar(cfg)
         airtc_num = airtc_num(keep);
         tempc_num = tempc_num(keep);
         swe_num   = swe_num(keep);
+        wind_num  = wind_num(keep);
         dtc_num   = dtc_num(keep, :);
         soil_vwc  = soil_vwc(keep, :);
 
@@ -658,9 +676,10 @@ function WX = load_snodar(cfg)
         swe_num(abs(swe_num - swe_ref) > swe_spike_thr | ...
                 (isfinite(swe_num) & swe_n < swe_min_support)) = NaN;
 
-        WX = table(ts, depth_num, airtc_num, tempc_num, swe_num, dtc_num, soil_vwc, ...
+        WX = table(ts, depth_num, airtc_num, tempc_num, swe_num, wind_num, dtc_num, ...
+                   soil_vwc, ...
             'VariableNames', {'timestamp', 'depth_m', 'airtc_c', 'temp_c', 'swe_mm', ...
-                              'dtc_c', 'soil_vwc'});
+                              'wind_ms', 'dtc_c', 'soil_vwc'});
         WX = sortrows(WX, 'timestamp');
     catch ME
         warning('BrundageSoOp:snodar', 'SNOdar load failed: %s', ME.message);

@@ -37,11 +37,9 @@ are discovered automatically from `cfg.data_dir`.
 
 Near the top of `BrundageSoOp.m`, seven toggles gate the pipeline stages
 (`run_L1`, `run_calib`, `run_snr`, `run_satid`, `run_L2`, `run_rfi`,
-`run_sigma0`). The defaults process on the HPC and leave everything off for
-local/interactive use; override them directly in the script for a one-off
-local run — for example, setting `run_calib = true` locally against an
-external data drive runs a full calibration pass (reads tens of GB; takes
-1-2 hours).
+`run_sigma0`); set them to match the stages you need. A full local pass
+against an external data drive reads the whole capture set (hundreds of GB
+for a multi-week collection) and takes hours.
 
 ### Inspecting an RFI-excised set
 
@@ -266,6 +264,18 @@ computation runs through `lib/BrundageSoOp_fun.m`. The viewer itself is
 split into 12 files under `viewer/` (shared state object, callbacks,
 catalog, data loading, layout, five per-plot-family renderers, and UI
 utility helpers).
+
+`L1: Within-run phase scatter` plots each 2-hourly run's circular phase
+standard deviation. The side-panel SNR cutoff and `Exclude overflow captures`
+filter captures before runs are grouped, and runs keeping fewer than
+`Min captures/run` are hidden. The points can be colored by run start hour or
+by median run SNR. The top-row Snow depth, SWE and temperature boxes, plus the
+side-panel `Wind speed` box (`cfg.wx_wind_col`), add stacked weather-station
+panels on a linked time axis; they start unticked each time the view is
+opened. `Wet snowfall` and `Cold snowfall` shade the times SWE and snow depth
+are both rising (rain absorbed by the pack raises SWE only) with air
+temperature within ±1 °C or below −1 °C (the `SNOWFALL_*` constants in
+`viewer/SoopViewerState.m`).
 
 On the wrapped and unwrapped `L2: Candidates` plots, `AboveFreezing` can be
 combined with the side-panel `AboveFreezing - Nearest` option after enabling
