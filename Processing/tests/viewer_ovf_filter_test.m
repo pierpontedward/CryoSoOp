@@ -1,8 +1,8 @@
 function tests = viewer_ovf_filter_test
 % Unit tests for the L2: Candidates overflow display filter: the
 % soop_viewer_util helpers (ovf_load, ovf_mask, ovf_usable), the composed
-% display-selection order (SNR cutoff -> overflow exclusion -> daily
-% time-of-day pick -> unwrap input), and seeded production renders of
+% display-selection order (overflow exclusion / SNR cutoff masks -> daily
+% run pick -> unwrap input), and seeded production renders of
 % soop_viewer_render_l2 / CB.render_now pinning the marking policy, legend
 % pairing, title notes, and checkbox Enable gating.
 % Run: matlab -batch "soop_setup_paths; addpath('tests'); runtests('viewer_ovf_filter_test')"
@@ -151,23 +151,26 @@ end
 % ------------------------------------- composed display-selection order
 
 function [TC, T] = run_selection(U, T, ovf_bases, excl, tgt, t0, t1)
-% Mirror the render's candidate selection order: SNR cutoff (>= 10 dB,
-% producer predicate) -> optional overflow exclusion -> widened-pool daily
-% time-of-day pick (target-day gated).
+% Mirror the render's daily candidate selection: run ids on the full table
+% (M.run_groups), row masks for the optional overflow exclusion and the SNR
+% cutoff (>= 10 dB, producer predicate), then the members of each target
+% day's nearest run (tod_run_idx, contributor minimum 1, target-day gated).
     W = hours(1);
-    [T, ~] = U.snrcut_apply(T, 10);
+    M = BrundageSoOp_fun();
+    run = M.run_groups(T.timestamp);
+    [~, ~, keep] = U.snrcut_apply(T, 10);
     if excl
-        T = T(~U.ovf_mask(T, ovf_bases), :);
+        keep = keep & ~U.ovf_mask(T, ovf_bases);
     end
-    Tw = T(T.timestamp >= t0 - W & T.timestamp < t1 + W, :);
-    [ix, tday] = U.tod_daily_idx(Tw.timestamp, tgt, W);
-    TC = Tw(ix(tday >= t0 & tday < t1), :);
+    w = find(keep);
+    [ix, tday] = U.tod_run_idx(T.timestamp(w), run(w), tgt, W, 1);
+    TC = T(w(ix(tday >= t0 & tday < t1)), :);
 end
 
-function test_exclusion_swaps_daily_pick(tc)
-    % Day with an overflow capture at the target and a clean one 20 min
-    % away: exclusion swaps the day's pick to the clean capture instead of
-    % dropping the day.
+function test_exclusion_thins_run_keeps_day(tc)
+    % A run holding an overflow capture at the target and a clean one 20 min
+    % later: included, both are members; excluded, the clean capture alone
+    % serves the day instead of the day dropping.
     U = tc.TestData.U;
     d = datetime(2026, 1, 5);
     T = table([d + hours(4); d + hours(4) + minutes(20)], ...
@@ -175,9 +178,9 @@ function test_exclusion_swaps_daily_pick(tc)
               'VariableNames', {'timestamp', 'base_name', 'snr_db'});
     tgt = hours(4);
     TC_in = run_selection(U, T, "OVF_CAP", false, tgt, d, d + days(1));
-    verifyEqual(tc, TC_in.base_name, "OVF_CAP");    % included: nearest wins
+    verifyEqual(tc, TC_in.base_name, ["OVF_CAP"; "CLEAN_CAP"]);
     TC_ex = run_selection(U, T, "OVF_CAP", true, tgt, d, d + days(1));
-    verifyEqual(tc, TC_ex.base_name, "CLEAN_CAP");  % excluded: clean substitute
+    verifyEqual(tc, TC_ex.base_name, "CLEAN_CAP");
 end
 
 function test_exclusion_drops_day_without_substitute(tc)
@@ -213,7 +216,7 @@ end
 
 function test_snr_gate_runs_before_overflow(tc)
     % A below-cutoff overflow capture is removed by the SNR gate whether or
-    % not exclusion is on; the day's clean above-cutoff capture is picked.
+    % not exclusion is on; the run's clean above-cutoff capture serves the day.
     U = tc.TestData.U;
     d = datetime(2026, 1, 8);
     T = table([d + hours(4); d + hours(4) + minutes(30)], ...

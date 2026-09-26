@@ -78,8 +78,9 @@ function set_family_rows(V, is_cand, is_candidate_plot)
     set([S.cb_depth, S.cb_swe, S.cb_airtc, S.cb_tempc, S.cb_abvfrz], ...
         'Visible', on);
     S.cb_snowtemp.Visible = matlab.lang.OnOffSwitchState(is_candidate_plot);
-    set([S.tod_row, S.phline_row, S.snrcut_row, S.ovf_row, S.theory_row, ...
-         S.fringe_row, S.hour_row, S.snrcolor_row, S.style_row], 'Visible', on);
+    set([S.tod_row, S.phline_row, S.snrcut_row, S.snrrel_row, S.ovf_row, ...
+         S.theory_row, S.fringe_row, S.hour_row, S.snrcolor_row, ...
+         S.style_row], 'Visible', on);
     nearest_on = matlab.lang.OnOffSwitchState(is_candidate_plot);
     set([S.abvfrz_nearest_row, S.abvfrz_nearest_width_row, ...
          S.snowtemp_nearest_row, S.soilvwc_row, S.dtc_clim_row], ...
@@ -516,8 +517,13 @@ function render_now(V)
         % snr_db (S.CAND follows the Dataset dropdown, so re-check every
         % render). Products without snr_db disable the control.
         S.sp_snrcut.Enable = matlab.lang.OnOffSwitchState(V.U.snrcut_usable(S.CAND));
-        % Color-by-SNR reads the same column the spinner filters on.
+        % Color-by-SNR and the run-relative filter read the same column the
+        % spinner filters on.
         S.cb_snrcolor.Enable = matlab.lang.OnOffSwitchState(V.U.snrcut_usable(S.CAND));
+        set([S.cb_snrrel, S.sp_snrrel_db, S.dd_snrrel_ref], 'Enable', ...
+            matlab.lang.OnOffSwitchState(V.U.snrcut_usable(S.CAND)));
+        % Min captures/run sets the daily run-median contributor minimum here.
+        S.sp_minrun.Enable = matlab.lang.OnOffSwitchState(S.cb_tod.Value);
         % Overflow filter needs a found overflow list AND a base_name column
         % in the loaded candidate product; the tooltip names the resolved
         % list so the active source is visible (fail-visible when disabled).
@@ -535,15 +541,20 @@ function render_now(V)
     % the candidates family, plus its own minimum-captures, snowfall-shading
     % and wind rows. Flagged captures (same find_overflows list, matched on
     % the L1 base_name column) are dropped before each run's circular std.
-    set([S.minrun_row, S.snowfall_row, S.wind_row], 'Visible', ...
+    set([S.snowfall_row, S.wind_row], 'Visible', ...
         matlab.lang.OnOffSwitchState(is_wrscatter));
+    S.minrun_row.Visible = matlab.lang.OnOffSwitchState(is_wrscatter || is_cand);
     if is_wrscatter
-        set([S.ovf_row, S.snrcut_row, S.snrcolor_row, S.hour_row], 'Visible', 'on');
+        set([S.ovf_row, S.snrcut_row, S.snrrel_row, S.snrcolor_row, ...
+             S.hour_row], 'Visible', 'on');
         S.cb_hourcolor.Enable = 'on';   % one point per run: hour always defined
+        S.sp_minrun.Enable = 'on';
         set([S.cb_depth, S.cb_swe, S.cb_airtc, S.cb_tempc], 'Visible', 'on');
         snr_ok = V.U.snrcut_usable(S.L1);
         S.sp_snrcut.Enable = matlab.lang.OnOffSwitchState(snr_ok);
         S.cb_snrcolor.Enable = matlab.lang.OnOffSwitchState(snr_ok);
+        set([S.cb_snrrel, S.sp_snrrel_db, S.dd_snrrel_ref], 'Enable', ...
+            matlab.lang.OnOffSwitchState(snr_ok));
         % Snowfall shading reads AirTC, SWE and snow depth.
         wx_ok = V.U.snowfall_usable(S.WX);
         set([S.cb_wetsnow, S.cb_coldsnow], 'Enable', ...

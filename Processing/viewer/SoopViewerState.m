@@ -52,6 +52,10 @@ classdef SoopViewerState < handle
         WRSCATTER_MIN_CAPTURES = 10;
         % Within-run scatter: Pt x value applied when the view is opened.
         WRSCATTER_PT_SCALE = 3;
+        % Run-relative SNR rejection: default drop (dB below the run's
+        % median/max SNR). 5 dB below the median removes ~6 % of captures on
+        % the Brundage notch product; the same drop below the max removes ~17 %.
+        SNRREL_DROP_DB = 5;
     end
 
     properties
@@ -182,6 +186,10 @@ classdef SoopViewerState < handle
         phline_row
         sp_snrcut
         snrcut_row
+        cb_snrrel
+        sp_snrrel_db
+        dd_snrrel_ref
+        snrrel_row
         sp_minrun
         minrun_row
         cb_wetsnow

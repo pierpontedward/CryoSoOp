@@ -186,7 +186,7 @@ function test_catalog_wrapped_unwrapped_language(tc)
     for name = {'L2: Candidates — MUOS-5 (41622)', ...
                 'L2: Candidates Unwrapped — MUOS-5 (41622)'}
         math = PI(strcmp(names, name{1})).math;
-        verifyTrue(tc, contains(math, 'argmin(|t_wx-t_capture|)'));
+        verifyTrue(tc, contains(math, 'argmin(|t_wx-t_run_mid|)'));
         verifyTrue(tc, contains(math, '<=35 min'));
     end
 end
@@ -359,6 +359,7 @@ function test_render_tod_daily_unwrap(tc)
     kind = 'L2: Candidates Unwrapped — MUOS-5 (41622)';
     V.cb_tod.Value = true;
     V.ef_tod.Value = '05:30';
+    V.sp_minrun.Value = 1;      % 2-hourly captures: each is a 1-capture run
     soop_viewer_render_l2(V, kind);
     ax = findobj(V.panel, 'Type', 'axes');
     h = findobj(ax, 'Type', 'line');
@@ -390,6 +391,7 @@ function test_render_above_freezing_nearest_wrapped_and_unwrapped(tc)
     V.dp2.Value = tc.TestData.t0 + days(2);
     V.cb_tod.Value = true;
     V.ef_tod.Value = '0600';
+    V.sp_minrun.Value = 1;      % one capture per daily run
     V.cb_airtc.Value = true;
     V.cb_abvfrz.Value = true;
     V.cb_abvfrz_nearest.Value = true;

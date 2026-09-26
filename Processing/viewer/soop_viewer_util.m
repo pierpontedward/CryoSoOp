@@ -2,9 +2,10 @@ function U = soop_viewer_util()
 % UI/label/formatting helpers for BrundageSoOp_viewer. Returns a struct of
 % handles (same idiom as rfi_excise/BrundageSoOp_fun); each takes V first
 % (except pure helpers style_legend/wrap_deg/domain_color/plot_uses_*/tcol/
-% parse_tod/tod_daily_idx/nearest_above_freezing/phoff_measure/phoff_prep/
-% phoff_title/freeze_spans/
-% wx_axis_cfg/wx_axes_plan/snrcut_usable/snrcut_apply/snrcut_start/wx_temp_labels/
+% parse_tod/tod_daily_idx/tod_run_idx/circ_median_grp/nearest_above_freezing/
+% phoff_measure/phoff_prep/phoff_title/freeze_spans/
+% wx_axis_cfg/wx_axes_plan/snrcut_usable/snrcut_apply/snrcut_start/snrrel_keep/
+% empty_stage_msg/wx_temp_labels/
 % swe_per_fringe_mm/fringe_pick/fringe_latch/theory_overlay/unwrap_deg/
 % is_cand_kind/hour_bins/style_factors/style_apply/src_desc/open_fun).
     U.range_bounds = @range_bounds;
@@ -34,6 +35,8 @@ function U = soop_viewer_util()
     U.tcol = @tcol;
     U.parse_tod = @parse_tod;
     U.tod_daily_idx = @tod_daily_idx;
+    U.tod_run_idx = @tod_run_idx;
+    U.circ_median_grp = @circ_median_grp;
     U.nearest_above_freezing = @nearest_above_freezing;
     U.phoff_measure = @phoff_measure;
     U.phoff_prep = @phoff_prep;
@@ -46,6 +49,8 @@ function U = soop_viewer_util()
     U.snrcut_usable = @snrcut_usable;
     U.snrcut_apply = @snrcut_apply;
     U.snrcut_start = @snrcut_start;
+    U.snrrel_keep = @snrrel_keep;
+    U.empty_stage_msg = @empty_stage_msg;
     U.ovf_load = @ovf_load;
     U.ovf_mask = @ovf_mask;
     U.ovf_usable = @ovf_usable;
@@ -824,6 +829,105 @@ function [idx, tday] = tod_daily_idx(t, target, win)
 end
 
 
+function [idx, tday] = tod_run_idx(t, grp, target, win, min_n)
+% One collection run per target day: the run containing the eligible capture
+% nearest the day's target instant (tod_daily_idx rules: <= win, equal
+% distances keep the earliest row). A run is eligible when it holds >= min_n
+% rows. Callers pass only rows that contribute to the run statistic, so the
+% count is a contributor count. grp holds run labels (any numeric values, e.g.
+% M.run_groups ids carried through row masks). A run nearest for several target
+% days belongs to the day with the smallest nearest-capture distance (tie:
+% earliest day); the other days drop. Returns ascending indices of EVERY
+% member row of the chosen runs (members may lie outside win) with the
+% nominal target day of each member's run. NaT rows are ignored; t must be
+% unzoned (tod_daily_idx).
+    t   = t(:);
+    grp = grp(:);
+    if numel(grp) ~= numel(t)
+        error('soop_viewer_util:tod_run_idx:length', ...
+              'tod_run_idx: t and grp must have equal length.');
+    end
+    if ~(isnumeric(min_n) && isscalar(min_n) && isreal(min_n) && ...
+         isfinite(min_n) && min_n >= 1 && min_n == round(min_n))
+        error('soop_viewer_util:tod_run_idx:min_n', ...
+              'tod_run_idx: min_n must be a positive integer scalar.');
+    end
+    if ~isempty(t.TimeZone)
+        error('soop_viewer_util:tod_run_idx:zoned', ...
+              'tod_run_idx requires unzoned (wall-clock) datetimes.');
+    end
+    idx  = zeros(0, 1);
+    tday = NaT(0, 1);
+    ok = ~isnat(t) & ~isnan(double(grp));
+    if ~any(ok), return; end
+    % Recompact the labels so counting is independent of how they were made.
+    [~, ~, g] = unique(double(grp(ok)));
+    orig = find(ok);
+    n_run = accumarray(g, 1);
+    elig  = n_run(g) >= min_n;
+    if ~any(elig), return; end
+    t_e = t(orig(elig));
+    [ix, td] = tod_daily_idx(t_e, target, win);
+    if isempty(ix), return; end
+    g_e  = g(elig);
+    run  = g_e(ix);
+    dist = abs(t_e(ix) - (td + target));
+    % Each run keeps its closest target day (then the earliest day).
+    srt  = sortrows(table(run, dist, td));
+    keep = [true; srt.run(2:end) ~= srt.run(1:end-1)];
+    runs_k = srt.run(keep);
+    days_k = srt.td(keep);
+    [is_mem, loc] = ismember(g, runs_k);
+    idx  = orig(is_mem);
+    tday = days_k(loc(is_mem));
+end
+
+
+function [med, n] = circ_median_grp(y_deg, grp)
+% Per-group circular median (deg): the direction minimizing the summed arc
+% distance to the group's finite samples. The minimum of that piecewise-linear
+% cost lies on a breakpoint (a sample or its antipode), so every breakpoint is
+% evaluated and the first minimizer (samples in row order, then antipodes) is
+% refined to wrap(b + median(wrap(y - b))) — the ordinary median on the
+% unwrapped arc, and the midpoint for an even count on concentrated data. The
+% refinement is kept only when its cost does not exceed the breakpoint's (a
+% sample exactly antipodal to b breaks the linear-median argument).
+% Groups are numbered by sorted unique label: med(k)/n(k) belong to the k-th
+% smallest label. n = finite samples used; a group with none gives NaN, n = 0.
+% Output in [-180, 180).
+    y_deg = double(y_deg(:));
+    grp   = grp(:);
+    if numel(grp) ~= numel(y_deg)
+        error('soop_viewer_util:circ_median_grp:length', ...
+              'circ_median_grp: y_deg and grp must have equal length.');
+    end
+    [~, ~, g] = unique(grp);
+    ng  = max([g; 0]);
+    med = nan(ng, 1);
+    n   = zeros(ng, 1);
+    for k = 1:ng
+        y = y_deg(g == k);
+        y = y(isfinite(y));
+        n(k) = numel(y);
+        if isempty(y), continue; end
+        cand = [y; wrap_deg(y + 180)];
+        cost = zeros(numel(cand), 1);
+        for c = 1:numel(cand)
+            cost(c) = sum(abs(wrap_deg(y - cand(c))));
+        end
+        tol = 1e-9 * max(1, numel(y));
+        ib  = find(cost <= min(cost) + tol, 1);
+        b   = cand(ib);
+        m   = wrap_deg(b + median(wrap_deg(y - b)));
+        if sum(abs(wrap_deg(y - m))) <= cost(ib) + tol
+            med(k) = m;
+        else
+            med(k) = wrap_deg(b);
+        end
+    end
+end
+
+
 function [warm, wx_idx] = nearest_above_freezing(t_capture, t_wx, temp_c, win, threshold_c)
 % Match each collection to its nearest finite air-temperature observation.
 % A match is usable when its absolute time offset is <= win; warm is true
@@ -1325,17 +1429,66 @@ function ok = snrcut_usable(T)
 end
 
 
-function [T, ok] = snrcut_apply(T, cut)
+function [T, ok, keep] = snrcut_apply(T, cut)
 % Display SNR cutoff, the EXACT producer predicate (compare_sat_candidates):
 % keep rows with isfinite(snr_db) & snr_db >= cut, row order preserved —
 % NaN and both infinities drop, matching the pipeline's finite-SNR gate.
 % Fail-safe: an unusable table (see snrcut_usable) or an invalid cutoff
 % (non-scalar / non-finite / non-numeric) returns the input unchanged with
-% ok = false; never an operator error.
+% ok = false; never an operator error. keep is the row mask applied to the
+% input (all-true when ~ok), for callers carrying parallel vectors.
     ok = snrcut_usable(T) && isnumeric(cut) && isscalar(cut) && ...
          isreal(cut) && isfinite(cut);
+    if istable(T), keep = true(height(T), 1); else, keep = false(0, 1); end
     if ~ok, return; end
-    T = T(isfinite(T.snr_db) & T.snr_db >= cut, :);
+    keep = isfinite(T.snr_db) & T.snr_db >= cut;
+    T = T(keep, :);
+end
+
+
+function [keep, ok] = snrrel_keep(snr_db, grp, drop_db, ref)
+% Run-relative SNR rejection: keep a capture when its SNR is finite and
+% >= (run reference - drop_db), the reference being the 'median' or 'max' of
+% the finite SNR (dB) over its run's rows. grp holds run labels (any numeric
+% values). A run with no finite SNR keeps nothing; a single-capture run keeps
+% its capture. Fail-safe like snrcut_apply: non-numeric SNR, a length
+% mismatch, an invalid drop_db (non-scalar / non-finite / negative) or a ref
+% that is not exactly one of 'median' / 'max' (a single char row or scalar
+% string) returns keep all-true with ok = false.
+    snr_db = snr_db(:);
+    grp    = grp(:);
+    keep   = true(numel(snr_db), 1);
+    ref_ok = (ischar(ref) && isrow(ref)) || (isstring(ref) && isscalar(ref));
+    if ref_ok, ref = char(ref); end
+    ok = isnumeric(snr_db) && isreal(snr_db) && isnumeric(grp) && ...
+         numel(grp) == numel(snr_db) && ...
+         isnumeric(drop_db) && isscalar(drop_db) && isreal(drop_db) && ...
+         isfinite(drop_db) && drop_db >= 0 && ...
+         ref_ok && any(strcmp(ref, {'median', 'max'}));
+    if ~ok || isempty(snr_db), return; end
+    [~, ~, g] = unique(double(grp));
+    fin = isfinite(snr_db);
+    if strcmp(ref, 'median')
+        r = accumarray(g(fin), snr_db(fin), [max(g) 1], @median, NaN);
+    else
+        r = accumarray(g(fin), snr_db(fin), [max(g) 1], @max, NaN);
+    end
+    keep = fin & snr_db >= r(g) - drop_db;
+end
+
+
+function msg = empty_stage_msg(counts, msgs, fallback)
+% Name the selection stage that emptied a display: counts(k) is the number of
+% rows (or picks) surviving stages 1..k applied cumulatively in pipeline
+% order, msgs{k} the message for stage k. Returns the message of the first
+% stage whose count is zero, or fallback when none is (e.g. an empty result
+% for a reason no stage tracks).
+    k = find(counts(:) == 0, 1);
+    if isempty(k)
+        msg = fallback;
+    else
+        msg = msgs{k};
+    end
 end
 
 

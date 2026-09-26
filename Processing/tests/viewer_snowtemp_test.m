@@ -592,8 +592,8 @@ end
 
 
 function test_snowtemp_nearest_catalog_wording(tc)
-% The four Candidates entries must document the chosen policy: bands at capture
-% times, the inclusive source window, renderable-only selection, and that the
+% The four Candidates entries must document the chosen policy: bands at the run
+% midpoints, the inclusive source window, renderable-only selection, and that the
 % restriction covers the temperature field only.
     cfg = minimal_cfg();
     [PI, ~] = soop_viewer_catalog(cfg);
@@ -606,7 +606,7 @@ function test_snowtemp_nearest_catalog_wording(tc)
         verifyNotEmpty(tc, idx, kinds{k});
         txt = PI(idx).expl;
         verifySubstring(tc, txt, 'SnowTemp - Nearest', kinds{k});
-        verifySubstring(tc, txt, 'CAPTURE time', kinds{k});
+        verifySubstring(tc, txt, 'RUN MIDPOINT', kinds{k});
         verifySubstring(tc, txt, win, kinds{k});
         verifySubstring(tc, lower(txt), 'snow-depth', kinds{k});
     end
@@ -757,6 +757,7 @@ function test_snowtemp_nearest_matches_outside_displayed_range(tc)
     V.dp2.Value = t_cap + minutes(30);
     V.cb_snowtemp.Value = true;
     V.cb_tod.Value = true;
+    V.sp_minrun.Value = 1;       % one-capture daily run
     V.cb_snowtemp_nearest.Value = true;
     soop_viewer_render_l2(V, 'L2: Candidates — MUOS-5 (41622)');
     axD = thermograph_axes(tc, V);
@@ -765,10 +766,29 @@ function test_snowtemp_nearest_matches_outside_displayed_range(tc)
 end
 
 
+function test_snowtemp_nearest_run_median_uses_midpoint(tc)
+% Each band is centered on the daily run midpoint: two captures 06:00:00 /
+% 06:02:00 per day give a 06:01:00 center that matches no member timestamp.
+    V = nearest_fixture();
+    cleanup = onCleanup(@() delete(V.fig));
+    T2 = V.CAND;
+    T2.timestamp = T2.timestamp + minutes(2);
+    T2.base_name = T2.base_name + "b";
+    V.CAND = sortrows([V.CAND; T2], 'timestamp');
+    soop_viewer_render_l2(V, 'L2: Candidates — MUOS-5 (41622)');
+    srf = findobj(thermograph_axes(tc, V), 'Type', 'surface');
+    verifyNumElements(tc, srf, 3, 'one band per daily run median');
+    centers = sort(cellfun(@(s) mean(s.XData(:)), num2cell(srf)));
+    mids = datetime(2026, 1, 1, 6, 1, 0) + days(0:2)';
+    verifyLessThan(tc, max(abs(centers(:) - mids)), seconds(1), ...
+        'band centers are the run midpoints');
+end
+
+
 % --------------------------------------------------------------- fixtures
 
 function V = nearest_fixture()
-% Viewer with three daily-filtered captures, each within 35 min of a
+% Viewer with three daily-filtered one-capture runs, each within 35 min of a
 % renderable DTC profile, and the SnowTemp - Nearest modifier armed.
     cfg = minimal_cfg();
     cfg.wx_dtc_sensor_spacing_cm = 10;
@@ -776,7 +796,8 @@ function V = nearest_fixture()
     cfg.wx_dtc_order = 'top_to_bottom';
     V = build_viewer(cfg);
     % 06:00 matches the daily filter's default target time-of-day, so all
-    % three captures survive tod_daily_idx's 1 h window.
+    % three runs lie within its 1 h window; a 1-capture minimum lets each
+    % serve its day.
     t_cap = datetime(2026, 1, 1, 6, 0, 0) + days(0:2)';
     V.CAND = table(t_cap, "cap" + string((1:3)'), 20 * ones(3, 1), (10:10:30)', ...
         'VariableNames', {'timestamp', 'base_name', 'snr_db', 'corr_41622'});
@@ -788,6 +809,7 @@ function V = nearest_fixture()
     V.dp2.Value = max(t_cap) + hours(12);
     V.cb_snowtemp.Value = true;
     V.cb_tod.Value = true;
+    V.sp_minrun.Value = 1;
     V.cb_snowtemp_nearest.Value = true;
 end
 

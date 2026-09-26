@@ -266,9 +266,10 @@ catalog, data loading, layout, five per-plot-family renderers, and UI
 utility helpers).
 
 `L1: Within-run phase scatter` plots each 2-hourly run's circular phase
-standard deviation. The side-panel SNR cutoff and `Exclude overflow captures`
-filter captures before runs are grouped, and runs keeping fewer than
-`Min captures/run` are hidden. The points can be colored by run start hour or
+standard deviation. Runs are identified on the full L1 record. The side-panel
+SNR cutoff, the run-relative SNR filter and `Exclude overflow captures` then
+drop captures from those runs without splitting any, and runs keeping fewer
+than `Min captures/run` are hidden. The points can be colored by run start hour or
 by median run SNR. The top-row Snow depth, SWE and temperature boxes, plus the
 side-panel `Wind speed` box (`cfg.wx_wind_col`), add stacked weather-station
 panels on a linked time axis; they start unticked each time the view is
@@ -279,9 +280,24 @@ temperature within ±1 °C or below −1 °C (the `SNOWFALL_*` constants in
 
 On the wrapped and unwrapped `L2: Candidates` plots, `AboveFreezing` can be
 combined with the side-panel `AboveFreezing - Nearest` option after enabling
-`Daily capture nearest`. With the AirTC series selected, this mode draws thick
-orange rules only at kept collection times whose nearest finite air-temperature
-observation is strictly above 0 °C and no more than 35 minutes away.
+`Daily capture nearest`. With one or both temperature series selected, this
+mode draws thick orange rules only at kept daily run midpoints where a selected
+series' nearest finite observation (each series matched on its own) is strictly
+above 0 °C and no more than 35 minutes away.
+
+`Daily capture nearest` (whole candidates family) plots each day as the
+circular median phase of the collection run nearest the target time. The median
+is the direction that minimizes the summed arc distance, and the point sits at
+the run's time midpoint. Only contributing captures count: those that pass the
+SNR cutoff, the run-relative SNR filter and the overflow exclusion, and that
+have a displayable phase (chain-cal is applied per capture first). The filters
+therefore thin a run rather than drop the day. Runs with fewer contributors
+than `Min captures/run` cannot serve, so the day falls to another run within
+±1 h or is dropped. The Nearest overlays match at the run midpoint. The
+run-relative SNR filter (`Drop > X dB below median|max`, default 5 dB against
+the run median) removes captures more than X dB below their run's median or max
+SNR, on the candidates family and the within-run scatter. Its reference uses
+the run's captures after the overflow exclusion and before the SNR cutoff.
 
 `SnowTemp` adds a linked lower Digital Temperature Cable thermograph to those
 four Candidates plots. It colors the snowpack beneath the SNOdar snow surface

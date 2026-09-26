@@ -98,46 +98,6 @@ function soop_viewer_render_l2(V, kind)
             return;
         end
         [t0, t1] = range_bounds();
-        % Display SNR cutoff (side-panel spinner), applied BEFORE the daily
-        % time-of-day pick with the producer's exact predicate — so raising
-        % the cutoff can swap a day's representative to the nearest PASSING
-        % capture (same semantics as re-running compare_sat_candidates at
-        % the higher threshold). The title notes the cutoff only when it
-        % differs from the validated configured start (state-based, never
-        % keyed to how many rows a given range lost). snr_ok is false for
-        % products without snr_db (spinner disabled in callbacks).
-        snr_cut = S.sp_snrcut.Value;
-        [CAND, snr_ok] = V.U.snrcut_apply(S.CAND, snr_cut);
-        snr_note = '';
-        if snr_ok && snr_cut ~= V.U.snrcut_start(V.cfg)
-            snr_note = sprintf([' ' char(8212) ' SNR ' char(8805) ' %g dB'], snr_cut);
-        end
-        % Overflow display filter (side-panel checkbox): drop flagged rows
-        % BEFORE the date/daily selection so a day's pick swaps to the
-        % nearest clean capture (same semantics as the SNR cutoff).
-        % ovf_usable gates a checked-but-unusable box (no list found / no
-        % base_name column) so it never silently filters with an unknown
-        % list.
-        ovf_on = S.cb_ovf.Value && V.U.ovf_usable(S.CAND, S.OVF_ok);
-        ovf_note = '';
-        if ovf_on
-            CAND = CAND(~V.U.ovf_mask(CAND, S.OVF), :);
-            ovf_note = [' ' char(8212) ' overflow excluded'];
-        end
-        % Distinguish "range/window empty" from "a display filter removed
-        % the pick(s)" in both branches below: the hint appears only when
-        % the SAME selection re-run on the unfiltered table yields rows (no
-        % numeric count — nonfinite-SNR rows drop too, not just "below"),
-        % and it names only the filters that actually ran.
-        if snr_ok && ovf_on
-            cut_hint = sprintf(['Captures exist there, but none pass the SNR ' ...
-                char(8805) ' %g dB / overflow filters.'], snr_cut);
-        elseif snr_ok
-            cut_hint = sprintf(['Captures exist there, but none with valid SNR ' ...
-                char(8805) ' %g dB.'], snr_cut);
-        else
-            cut_hint = 'Captures exist there, but the overflow filter removed them.';
-        end
         % Candidate column names (raw baseline or corr_<norad>) — pure
         % string building from the kind.
         is_unwrap = startsWith(kind, 'L2: Candidates Unwrapped');
@@ -153,77 +113,190 @@ function soop_viewer_render_l2(V, kind)
                 phase_label = [char(phase_label) ' unwrapped'];
             end
         end
-        % Optional daily time-of-day filter: one capture per target day (the
-        % capture nearest that day's target instant), dropping days whose
-        % nearest capture is farther than TOD_WINDOW away. The date range
-        % selects target days, so the candidate subset gets ±TOD_WINDOW
-        % slack — a capture just outside the picked range may serve a
-        % target day inside it. Selection is row-based (same rows for
-        % every candidate figure); a kept row whose phase value is NaN
-        % still counts in n but draws no point.
-        tod_note = '';
-        if S.cb_tod.Value
-            TOD_WINDOW = hours(1);
+        C0  = S.CAND;
+        tc0 = tcol(C0);
+        % Displayed phase for every loaded row: the domain column plus, in the
+        % 'notch + phase offset cal (synth)' Dataset, the per-row chain-phase
+        % correction on the corrected candidates (the raw baseline stays raw).
+        % Computed before selection so the daily run median can require a
+        % displayable phase; the per-row values equal a post-selection
+        % base_name join.
+        [phase_col, dlab] = domain_col1(C0, c_sinc, c_fd, c_muos);
+        phase_label = [char(phase_label) ' [' char(dlab) ']'];
+        if ~ismember(phase_col, C0.Properties.VariableNames)
+            show_msg(sprintf('%s not in sat_candidates_corrected.csv.', phase_col));
+            return;
+        end
+        y_all = C0.(phase_col);
+        if is_chaincal_mode() && ~isempty(m)
+            [dlt, okc, why] = chaincal_delta(C0);
+            if ~okc, show_msg(why); return; end
+            y_all = wrap_deg(y_all + dlt);
+            phase_label = [phase_label ' + phase offset cal'];
+        end
+
+        % Display filters are row masks on the full loaded table, applied in
+        % pipeline order: overflow exclusion -> run-relative SNR -> absolute
+        % SNR cutoff -> selection. Run ids come from the full table, so
+        % neither a filter nor the date range splits a run.
+        run_all = M.run_groups(tc0);
+        % Overflow display filter (side-panel checkbox): flagged rows leave
+        % before the selection, so a day's pick swaps to the nearest clean
+        % capture. ovf_usable gates a checked-but-unusable box (no list found /
+        % no base_name column) so it never silently filters with an unknown
+        % list.
+        ovf_on = S.cb_ovf.Value && V.U.ovf_usable(C0, S.OVF_ok);
+        ovf_note = '';
+        k_ovf = true(height(C0), 1);
+        if ovf_on
+            k_ovf = ~V.U.ovf_mask(C0, S.OVF);
+            ovf_note = [' ' char(8212) ' overflow excluded'];
+        end
+        % Run-relative SNR rejection (side-panel checkbox): the reference —
+        % the run's median or max SNR — is taken over the run's post-overflow
+        % rows and before the absolute cutoff, so moving the cutoff never
+        % moves it. It acts only with a usable snr_db column and valid
+        % spinner/dropdown values, so a checked-but-disabled box is inert.
+        k_rel  = true(height(C0), 1);
+        rel_on = false;
+        rel_note = '';
+        if S.cb_snrrel.Value && V.U.snrcut_usable(C0)
+            rel_db  = S.sp_snrrel_db.Value;
+            rel_ref = char(S.dd_snrrel_ref.Value);
+            [kr, rel_on] = V.U.snrrel_keep(C0.snr_db(k_ovf), run_all(k_ovf), ...
+                                           rel_db, rel_ref);
+            if rel_on
+                k_rel(k_ovf) = kr;
+                rel_note = sprintf([' ' char(8212) ' SNR ' char(8805) ' run %s ' ...
+                                    char(8722) ' %g dB'], rel_ref, rel_db);
+            end
+        end
+        % Display SNR cutoff (side-panel spinner), the producer's exact
+        % predicate, applied before the selection — raising it thins a day's
+        % run or moves the day to another eligible run (same semantics as
+        % re-running compare_sat_candidates at the higher threshold). The
+        % title notes the cutoff only when it differs from
+        % the validated configured start (state-based, never keyed to how many
+        % rows a given range lost). snr_ok is false for products without
+        % snr_db (spinner disabled in callbacks).
+        snr_cut = S.sp_snrcut.Value;
+        [~, snr_ok, k_snr] = V.U.snrcut_apply(C0, snr_cut);
+        snr_note = '';
+        if snr_ok && snr_cut ~= V.U.snrcut_start(V.cfg)
+            snr_note = sprintf([' ' char(8212) ' SNR ' char(8805) ' %g dB'], snr_cut);
+        end
+
+        % Selection (cand_select). Plain: rows in the date range; a kept row
+        % whose phase is NaN still counts in n but draws no point. Daily
+        % capture nearest: every contributor (row with a finite displayed
+        % phase) of the run nearest each target day's target instant, among
+        % runs keeping >= Min captures/run contributors, collapsed below to one
+        % run-median point per day; days with no eligible run within
+        % TOD_WINDOW drop. The date range selects target days, so a run just
+        % outside it may serve a target day inside it.
+        TOD_WINDOW = hours(1);
+        tod_on = S.cb_tod.Value;
+        tgt = duration(NaN, 0, 0);
+        if tod_on
             [tgt, okt] = V.U.parse_tod(S.ef_tod.Value);
             if ~okt
                 show_msg('Enter time as H, HHMM, or HH:MM (e.g. 0600).');
                 return;
             end
-            in_win = @(T) T(tcol(T) >= t0 - TOD_WINDOW & ...
-                            tcol(T) <  t1 + TOD_WINDOW, :);
-            TCw = in_win(CAND);
-            [ix, tday] = V.U.tod_daily_idx(tcol(TCw), tgt, TOD_WINDOW);
-            TC = TCw(ix(tday >= t0 & tday < t1), :);
-            if isempty(TC)
-                msg = ['No daily captures within ' char(177) '1 h of ' ...
-                       char(tgt, 'hh:mm') ' in the selected date range.'];
-                % Re-run the SAME selection on the unfiltered table: only a
-                % nonempty unfiltered pick proves the cutoff (not the
-                % window) removed the day(s).
-                if snr_ok || ovf_on
-                    TCw0 = in_win(S.CAND);
-                    [ix0, tday0] = V.U.tod_daily_idx(tcol(TCw0), tgt, TOD_WINDOW);
-                    if ~isempty(TCw0(ix0(tday0 >= t0 & tday0 < t1), :))
-                        msg = [msg ' ' cut_hint];
-                    end
-                end
-                show_msg(msg);
-                return;
-            end
-            tod_note = [' — daily @ ' char(tgt, 'hh:mm')];
-        else
-            TC = CAND(tcol(CAND) >= t0 & tcol(CAND) < t1, :);
-            if isempty(TC)
-                msg = 'No candidate rows in the selected date range.';
-                if (snr_ok || ovf_on) && ...
-                        ~isempty(S.CAND(tcol(S.CAND) >= t0 & tcol(S.CAND) < t1, :))
-                    msg = cut_hint;
-                end
-                show_msg(msg);
-                return;
-            end
         end
-        [phase_col, dlab] = domain_col1(TC, c_sinc, c_fd, c_muos);
-        phase_label = [char(phase_label) ' [' char(dlab) ']'];
-        if ~ismember(phase_col, TC.Properties.VariableNames)
-            show_msg(sprintf('%s not in sat_candidates_corrected.csv.', phase_col));
+        min_n = S.sp_minrun.Value;
+        select = @(mask, n_min) cand_select(V.U, tc0, run_all, mask, tod_on, ...
+                                            t0, t1, tgt, TOD_WINDOW, n_min);
+        keep = k_ovf & k_rel & k_snr;
+        if tod_on
+            keep = keep & isfinite(y_all);
+        end
+        [ix, tday] = select(keep, min_n);
+        if isempty(ix)
+            % Name the stage that emptied the display: re-run the selection
+            % with the active stages enabled cumulatively in pipeline order
+            % and report the first one that leaves nothing.
+            if tod_on
+                win_msg = ['No collection run within ' char(177) '1 h of ' ...
+                           char(tgt, 'hh:mm') ' in the selected date range.'];
+            else
+                win_msg = 'No candidate rows in the selected date range.';
+            end
+            masks = {true(height(C0), 1)};
+            msgs  = {win_msg};
+            if ovf_on
+                masks{end+1} = masks{end} & k_ovf;
+                msgs{end+1}  = 'Captures exist there, but the overflow filter removed them.';
+            end
+            if rel_on
+                masks{end+1} = masks{end} & k_rel;
+                msgs{end+1}  = sprintf(['Captures exist there, but none have SNR ' ...
+                    char(8805) ' their run''s %s ' char(8722) ' %g dB.'], rel_ref, rel_db);
+            end
+            if snr_ok
+                masks{end+1} = masks{end} & k_snr;
+                msgs{end+1}  = sprintf(['Captures exist there, but none with valid ' ...
+                    'SNR ' char(8805) ' %g dB.'], snr_cut);
+            end
+            n_min = ones(1, numel(masks));
+            if tod_on
+                masks{end+1} = masks{end} & isfinite(y_all);
+                n_min(end+1) = 1;
+                msgs{end+1}  = ['Captures pass the filters there, but none has a ' ...
+                                'displayable phase (e.g. no chain-cal match).'];
+                masks{end+1} = masks{end};
+                n_min(end+1) = min_n;
+                msgs{end+1}  = sprintf(['No run there keeps ' char(8805) ' %d ' ...
+                    'captures with a displayable phase after the filters ' ...
+                    '(Min captures/run).'], min_n);
+            end
+            counts = zeros(1, numel(masks));
+            for k = 1:numel(masks)
+                counts(k) = numel(select(masks{k}, n_min(k)));
+            end
+            show_msg(V.U.empty_stage_msg(counts, msgs, win_msg));
             return;
         end
-        y_ph = TC.(phase_col);
-        % 'notch + phase offset cal (synth)' Dataset: chain-phase correction on
-        % the corrected candidates; the raw baseline stays raw.
-        if is_chaincal_mode() && ~isempty(m)
-            [dlt, okc, why] = chaincal_delta(TC);
-            if ~okc, show_msg(why); return; end
-            y_ph = wrap_deg(y_ph + dlt);
-            phase_label = [phase_label ' + phase offset cal'];
+        TC   = C0(ix, :);
+        y_ph = y_all(ix);
+        % base_names of the displayed captures (every run contributor under the
+        % daily filter), for the L2 theta lookup that sets the theory fringe
+        % rate.
+        bn_shown = strings(0, 1);
+        if ismember('base_name', C0.Properties.VariableNames)
+            bn_shown = string(TC.base_name);
+        end
+        tod_note  = '';
+        n_ovf_med = 0;
+        if tod_on
+            % One point per day: the circular median of the contributors'
+            % displayed phase (circ_median_grp), at the contributors' time
+            % midpoint (the aggregate group-midpoint rule) with their median
+            % SNR. The collapsed table carries only timestamp and snr_db;
+            % contributor provenance (overflow count, theta base_names) is kept
+            % separately. Every contributor has a finite phase, so the overflow
+            % count is a contribution count.
+            [~, ~, dg] = unique(tday);
+            [y_ph, n_con] = V.U.circ_median_grp(y_ph, dg);
+            t_mid = splitapply(@(x) min(x) + (max(x) - min(x)) / 2, tcol(TC), dg);
+            if V.U.snrcut_usable(TC)
+                snr_med = splitapply(@(x) median(x, 'omitnan'), TC.snr_db, dg);
+            else
+                snr_med = nan(numel(t_mid), 1);
+            end
+            if ~ovf_on
+                n_ovf_med = sum(V.U.ovf_mask(TC, S.OVF));
+            end
+            TC = table(t_mid, snr_med, 'VariableNames', {'timestamp', 'snr_db'});
+            tod_note = sprintf([' ' char(8212) ' daily run median @ %s (%d captures)'], ...
+                               char(tgt, 'hh:mm'), sum(n_con));
         end
         % Unwrapped views: unwrap the DISPLAYED samples only (after the
-        % date-range / daily time-of-day / SNR-cutoff selection), with
-        % chain-cal already applied row-wise. Changing any filter
-        % re-unwraps the series and can re-anchor it or change branches;
-        % under the daily filter the unwrap runs at ~24 h spacing, so a
-        % day-to-day phase change > 180° aliases by n*360°.
+        % date-range / SNR / overflow selection and, under the daily filter,
+        % after the per-day collapse), with chain-cal already applied row-wise.
+        % Changing any filter re-unwraps the series and can re-anchor it or
+        % change branches; under the daily filter the unwrap runs at ~24 h
+        % spacing, so a day-to-day phase change > 180° aliases by n*360°.
         if is_unwrap
             y_ph = V.U.unwrap_deg(tcol(TC), y_ph);
         end
@@ -235,8 +308,9 @@ function soop_viewer_render_l2(V, kind)
         % CONTRIBUTION mask — membership AND a finite displayed value: a
         % NaN row (e.g. an unmatched chain-cal join) draws nothing and
         % feeds no aggregate, so it must not create a legend entry or
-        % count in the title note.
-        if ovf_on
+        % count in the title note. Daily run-median points are aggregates too:
+        % they take no marks, and the note counts the flagged contributors.
+        if ovf_on || tod_on
             ovf_m = false(height(TC), 1);
         else
             ovf_m = V.U.ovf_mask(TC, S.OVF) & isfinite(y_ph);
@@ -245,7 +319,11 @@ function soop_viewer_render_l2(V, kind)
         if any(ovf_m) && ~strcmp(agg, 'Raw captures')
             ovf_note = sprintf([' ' char(8212) ' %d overflow included'], sum(ovf_m));
         end
-        phase_label = [phase_label tod_note snr_note ovf_note];   % '' unless filters active
+        if n_ovf_med > 0
+            ovf_note = sprintf([' ' char(8212) ' %d overflow included'], n_ovf_med);
+        end
+        % '' unless filters active
+        phase_label = [phase_label tod_note rel_note snr_note ovf_note];
         % Unwrapped phase is a linear quantity — circular stats would
         % re-wrap it. Aggregated std then measures the temporal spread of a
         % trending cumulative phase, not estimator uncertainty.
@@ -331,8 +409,11 @@ function soop_viewer_render_l2(V, kind)
         abvfrz = S.cb_abvfrz.Value;
         abvfrz_nearest = abvfrz && S.cb_tod.Value && ...
             S.cb_abvfrz_nearest.Value && startsWith(kind, 'L2: Candidates');
-        nearest_air_ok = S.cb_airtc.Value && has_wx_col('airtc_c') && ...
-            any(isfinite(S.WX.airtc_c));
+        % Temperature series the Nearest mode can match: ticked, present,
+        % and holding at least one finite sample in the full weather record.
+        nearest_cols = {'airtc_c', 'temp_c'};
+        nearest_ok = [S.cb_airtc.Value, S.cb_tempc.Value] & ...
+            cellfun(@(c) has_wx_col(c) && any(isfinite(S.WX.(c))), nearest_cols);
         want_temp = (show_air || show_tmp) && t1 > t0 && ~abvfrz;
         % Depth and temperature always plot at raw 15-min resolution; the agg
         % dropdown only applies to the phase line.
@@ -509,18 +590,23 @@ function soop_viewer_render_l2(V, kind)
             leg{end+1} = 'Overflow';
             st_pts(end+1) = h_ovf;
         end
-        % AboveFreezing wet-snow indicator. Nearest mode uses the closest
-        % finite AirTC observation and thick collection-time rules. Normal
+        % AboveFreezing wet-snow indicator. Nearest mode draws thick
+        % collection-time rules where ANY ticked sensor's closest finite
+        % observation is warm (each sensor matched independently). Normal
         % mode remains one band layer over times ANY ticked sensor is warm;
         % invalid samples and long station gaps split bands (freeze_spans).
         if abvfrz_nearest
-            if nearest_air_ok
+            if any(nearest_ok)
                 % Match the full weather table so a kept capture just outside
                 % a target-day range can still use its nearby observation.
                 match_window = minutes(S.ABOVE_FREEZING_NEAREST_WINDOW_MIN);
-                [warm, ~] = V.U.nearest_above_freezing( ...
-                    tcol(TC), tcol(S.WX), S.WX.airtc_c, match_window, ...
-                    S.ABOVE_FREEZING_THRESHOLD_C);
+                warm = false(height(TC), 1);
+                for k = find(nearest_ok)
+                    wk = V.U.nearest_above_freezing( ...
+                        tcol(TC), tcol(S.WX), S.WX.(nearest_cols{k}), ...
+                        match_window, S.ABOVE_FREEZING_THRESHOLD_C);
+                    warm = warm | wk(:);
+                end
                 if any(warm)
                     t_TC = tcol(TC);
                     % Layer 'bottom' (xline defaults to 'top') keeps the
@@ -534,7 +620,9 @@ function soop_viewer_render_l2(V, kind)
                     % width spinner, rather than the generic Line x style
                     % multiplier, owns these collection-time rule widths.
                     lh(end+1) = hv(1);
-                    leg{end+1} = sprintf('Air Temp > %g%cC (nearest)', ...
+                    wxlab_n = V.U.wx_temp_labels(V.cfg);
+                    leg{end+1} = sprintf('%s > %g%cC (nearest)', ...
+                        strrep(strjoin(wxlab_n(nearest_ok), ' / '), '_', '\_'), ...
                         S.ABOVE_FREEZING_THRESHOLD_C, char(176));
                 end
             end
@@ -600,7 +688,8 @@ function soop_viewer_render_l2(V, kind)
         % here; raw 15-min curve in EVERY agg mode, never aggregated; drawn
         % only while the SWE overlay is shown). Fringe rate from the
         % confirmed satellite geometry: theta_inc = 90 - mean elevation of
-        % the L2 rows matched to the displayed candidates by base_name
+        % the L2 rows matched to the displayed candidates (every daily run
+        % contributor) by base_name
         % (fallback: finite L2 rows in range; none -> unavailable, drawn as
         % nothing). Anchoring/availability live in the pure theory_overlay
         % helper; the legend names the active mm-per-2pi rate.
@@ -613,7 +702,7 @@ function soop_viewer_render_l2(V, kind)
         th = NaN;
         if ~isempty(S.L2) && all(ismember({'base_name', 'theta_deg'}, ...
                                           S.L2.Properties.VariableNames))
-            [tf_m, loc] = ismember(string(TC.base_name), string(S.L2.base_name));
+            [tf_m, loc] = ismember(bn_shown, string(S.L2.base_name));
             thv = S.L2.theta_deg(loc(tf_m));
             thv = thv(isfinite(thv));
             if isempty(thv)
@@ -927,4 +1016,24 @@ function cmap = dtc_colormap()
     anchors = [0.08 0.20 0.70; 0.20 0.70 0.90; 0.98 0.92 0.55; 0.80 0.08 0.08];
     cmap = interp1(linspace(0, 1, size(anchors, 1)), anchors, ...
                    linspace(0, 1, 256));
+end
+
+
+function [ix, tday] = cand_select(U, t, run, mask, daily, t0, t1, tgt, win, min_n)
+% Candidate selection over the rows where mask is true. Returns ascending row
+% indices into the full table and each row's nominal target day (NaT without
+% the daily filter). Plain: rows in [t0,t1). Daily: tod_run_idx (runs keeping
+% >= min_n masked rows) over the whole masked table, so a chosen run keeps
+% members that fall outside +-win; target days in [t0,t1).
+    mask = mask(:);
+    if ~daily
+        ix   = find(mask & t >= t0 & t < t1);
+        tday = NaT(numel(ix), 1);
+        return;
+    end
+    w = find(mask);
+    [i0, td] = U.tod_run_idx(t(w), run(w), tgt, win, min_n);
+    r    = td >= t0 & td < t1;
+    ix   = w(i0(r));
+    tday = td(r);
 end

@@ -280,3 +280,76 @@ function test_render_now_rows_and_enable(tc)
     verifyFalse(tc, logical(V.snowfall_row.Visible));
     verifyFalse(tc, logical(V.cb_swe.Visible));
 end
+
+
+% ------------------------------------------------------- run-relative SNR
+
+function T = l1_snr_runs(tc, t, ph, snr)
+% L1 rows at times t with sinc phases ph and SNR snr.
+    n = numel(t);
+    T = table(t(:), "cap_" + string((1:n)'), ph(:), snr(:), 'VariableNames', ...
+              {'timestamp', 'base_name', 'peak_phase_deg', 'snr_db'});
+end
+
+function test_relative_filter_drops_low_snr_capture(tc)
+    % Run 1 {0,0,0,90}: the 90 deg capture sits 10 dB below the run median,
+    % so the 5 dB median filter removes it and the run std falls to 0.
+    t0 = tc.TestData.t0;
+    t = [t0 + hours(6) + seconds(0:10:30), t0 + hours(8) + seconds(0:10:30)];
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_snr_runs(tc, t, [0 0 0 90 10 10 10 10], [20 20 20 10 20 20 20 20]);
+    V.dp1.Value = t0;  V.dp2.Value = t0;
+    V.dd_domain.Value = 'sinc';
+    V.sp_minrun.Value = 1;
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    sd = run_ydata(V);
+    verifyGreaterThan(tc, sd(1), 1);
+    V.cb_snrrel.Value = true;
+    V.sp_snrrel_db.Value = 5;
+    V.dd_snrrel_ref.Value = 'median';
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    verifyEqual(tc, run_ydata(V), [0; 0], 'AbsTol', 1e-6);
+end
+
+function test_relative_reference_spans_range_boundary(tc)
+    % A run crossing the range start: its pre-range captures (SNR 50) set
+    % the max reference, so the in-range 44 dB capture (phase 90) drops at
+    % 5 dB; an in-range-only reference (46) would keep it.
+    t0 = tc.TestData.t0;
+    t = [t0 - seconds([20 10]), t0 + seconds([0 10 20])];
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_snr_runs(tc, t, [0 0 90 0 0], [50 50 44 46 46]);
+    V.dp1.Value = t0;  V.dp2.Value = t0;
+    V.dd_domain.Value = 'sinc';
+    V.sp_minrun.Value = 1;
+    V.cb_snrrel.Value = true;
+    V.sp_snrrel_db.Value = 5;
+    V.dd_snrrel_ref.Value = 'max';
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    verifyEqual(tc, run_ydata(V), 0, 'AbsTol', 1e-6);
+end
+
+function test_filtered_bridge_keeps_run_identity(tc)
+    % Captures at 0 / 20 / 40 min form ONE run (no gap > 30 min). The SNR
+    % cutoff removes the 20-min bridge: the survivors keep the full-table run
+    % id, so one run of 2 captures (std of {0, 60}, start at 0 min) plots
+    % with Min captures/run 2, rather than two 1-capture runs being hidden.
+    t0 = tc.TestData.t0;
+    t = t0 + hours(6) + minutes([0 20 40]);
+    V = seeded_viewer(tc);
+    cleanup = onCleanup(@() delete(V.fig));
+    V.L1 = l1_snr_runs(tc, t, [0 30 60], [20 5 20]);
+    V.dp1.Value = t0;  V.dp2.Value = t0;
+    V.dd_domain.Value = 'sinc';
+    V.sp_minrun.Value = 2;
+    V.sp_snrcut.Value = 10;
+    soop_viewer_render_l1(V, 'L1: Within-run phase scatter');
+    ax = main_ax(V);
+    h = [findobj(ax, 'Type', 'line'); findobj(ax, 'Type', 'scatter')];
+    verifyNumElements(tc, h(1).YData, 1, 'one run plotted');
+    [~, sd] = V.M.circ_stats([0; 60]);
+    verifyEqual(tc, h(1).YData(1), sd, 'AbsTol', 1e-9);
+    verifyEqual(tc, h(1).XData(1), t(1));
+end

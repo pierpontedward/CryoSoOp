@@ -691,9 +691,10 @@ function test_snrcut_start_validation(tc)
 end
 
 function test_snrcut_before_daily_pick(tc)
-    % Composition pinning the render's order (cutoff BEFORE the daily
-    % nearest pick): a day whose nearest capture fails the cutoff selects
-    % the farther PASSING capture; a day with no passing capture vanishes.
+    % Helper composition with the cutoff BEFORE tod_daily_idx (which
+    % tod_run_idx uses for its nearest-capture pick): a day whose nearest
+    % capture fails the cutoff selects the farther PASSING capture; a day
+    % with no passing capture vanishes.
     U = tc.TestData.U;
     d1 = datetime(2026, 1, 10);  d2 = datetime(2026, 1, 11);
     t   = [d1 + hours(6) + minutes(10);    % day 1 nearest, snr 5 (fails)
@@ -781,36 +782,6 @@ function test_snrcut_spinner_construction(tc)
         verifyEqual(tc, sp.Value, snr0, sprintf('start %g', thr{1}));
         delete(sp);
     end
-end
-
-function test_snrcut_empty_state_predicate(tc)
-    % The TOD empty-state hint compares the FULLY SELECTED populations:
-    % a passing-but-off-time capture keeps the ±window subset nonempty, yet
-    % the unfiltered selection (not the window) is what proves the cutoff
-    % removed the day's would-be pick. Mirrors the render's exact calls.
-    U = tc.TestData.U;
-    d = datetime(2026, 1, 10);
-    t   = [d + hours(2);                      % passes SNR, outside ±1 h TOD
-           d + hours(6) + minutes(10)];       % TOD-eligible, fails cutoff
-    T = table(t, [15; 5], 'VariableNames', {'timestamp', 'snr_db'});
-    t0 = d;  t1 = d + days(1);  W = hours(1);  tgt = hours(6);
-    sel = @(T) subset_sel(U, T, t0, t1, tgt, W);
-    verifyFalse(tc, isempty(sel(T)), 'unfiltered selection picks 06:10');
-    [Tf, ok] = U.snrcut_apply(T, 10);
-    verifyTrue(tc, ok);
-    win = Tf(Tf.timestamp >= t0 - W & Tf.timestamp < t1 + W, :);
-    verifyFalse(tc, isempty(win), 'window still holds the off-time row');
-    verifyTrue(tc, isempty(sel(Tf)), 'filtered selection is empty');
-    % => hint must fire (unfiltered sel nonempty), though the window is not
-    % empty — the render keys the hint on exactly this comparison.
-end
-
-function TC = subset_sel(U, T, t0, t1, tgt, W)
-% The render's TOD selection, verbatim: ±window subset → daily pick →
-% target-day range mask.
-    Tw = T(T.timestamp >= t0 - W & T.timestamp < t1 + W, :);
-    [ix, tday] = U.tod_daily_idx(Tw.timestamp, tgt, W);
-    TC = Tw(ix(tday >= t0 & tday < t1), :);
 end
 
 function test_site_configs_parse(tc)
@@ -1143,18 +1114,19 @@ function test_style_layout_and_gating(tc)
     verifyEqual(tc, V.sp_ptsz.Step, 0.25);
     verifyEqual(tc, V.sp_abvfrz_nearest_linew.Step, 0.5);
 
-    % Placement: directly under the legend row; grid has 26 x 28 px control
+    % Placement: directly under the legend row; grid has 30 x 28 px control
     % rows before the two 56 px sub-grid rows.
     g = V.style_row.Parent;
     verifyEqual(tc, V.style_row.Layout.Row, ...
                 V.dd_legend.Parent.Layout.Row + 1);
-    verifyNumElements(tc, g.RowHeight, 39);
-    verifyEqual(tc, [g.RowHeight{1:29}], repmat(28, 1, 29));
-    verifyEqual(tc, [g.RowHeight{30:31}], [56 56]);
+    verifyNumElements(tc, g.RowHeight, 40);
+    verifyEqual(tc, [g.RowHeight{1:30}], repmat(28, 1, 30));
+    verifyEqual(tc, [g.RowHeight{31:32}], [56 56]);
 
-    % The new modifier is directly under Daily capture nearest. It appears
-    % only for the four MUOS Candidates plots and is selectable only while
-    % the daily filter is enabled; disabling it preserves the checked value.
+    % The AboveFreezing - Nearest modifier is directly under Daily capture
+    % nearest. It appears only for the four MUOS Candidates plots and is
+    % selectable only while the daily filter is enabled; disabling it
+    % preserves the checked value.
     verifyEqual(tc, V.abvfrz_nearest_row.Layout.Row, V.tod_row.Layout.Row + 1);
     verifyEqual(tc, V.abvfrz_nearest_width_row.Layout.Row, ...
                 V.abvfrz_nearest_row.Layout.Row + 1);
@@ -1178,10 +1150,24 @@ function test_style_layout_and_gating(tc)
     verifyTrue(tc, logical(V.cb_abvfrz_nearest.Value));
     V.CB.set_family_rows(V, false, false);       % restore build-hidden state
 
-    % Overflow filter row: built directly under the SNR-cutoff row,
-    % unchecked by default (include + mark, never a silent filter change).
-    verifyEqual(tc, V.ovf_row.Layout.Row, V.snrcut_row.Layout.Row + 1);
+    % Run-relative SNR row directly under the SNR-cutoff row, then the
+    % overflow filter row; both unchecked by default (never a silent filter
+    % change), relative drop at its default against the run median.
+    verifyEqual(tc, V.snrrel_row.Layout.Row, V.snrcut_row.Layout.Row + 1);
+    verifyEqual(tc, V.ovf_row.Layout.Row, V.snrrel_row.Layout.Row + 1);
     verifyFalse(tc, logical(V.cb_ovf.Value));
+    verifyFalse(tc, logical(V.cb_snrrel.Value));
+    verifyEqual(tc, V.sp_snrrel_db.Value, SoopViewerState.SNRREL_DROP_DB);
+    verifyEqual(tc, V.dd_snrrel_ref.Value, 'median');
+    verifyEqual(tc, V.dd_snrrel_ref.Items, {'median', 'max'});
+
+    % Run-relative row: hidden at build, shown on every family view.
+    verifyFalse(tc, logical(V.snrrel_row.Visible));
+    V.CB.set_family_rows(V, true, false);        % L2: Sensor data
+    verifyTrue(tc, logical(V.tod_row.Visible));
+    verifyTrue(tc, logical(V.snrrel_row.Visible));
+    V.CB.set_family_rows(V, false, false);       % restore build-hidden state
+    verifyFalse(tc, logical(V.snrrel_row.Visible));
 
     % Hidden at build; the production family gate shows/hides it with the
     % other candidates rows; spinner values and the overflow checkbox

@@ -274,12 +274,15 @@ function render_l1(V, kind)
 end
 
 
-function render_wrscatter(V, T, t0, t1)
+function render_wrscatter(V, ~, t0, t1)
 % Within-run phase scatter: circular std (deg) of each 2-hourly run's
-% captures, one point per run at the run start. Captures are filtered
-% (SNR cutoff, overflow exclusion) before runs are grouped, and runs keeping
-% fewer than the minimum captures are hidden. Optional stacked weather
-% panels (depth / SWE, temperatures, wind) share the linked time axis, and
+% captures, one point per run at the run start. Runs are identified on the
+% full L1 table (S.L1); the filters (overflow exclusion, run-relative SNR, SNR
+% cutoff) then drop captures from them without splitting a run, the [t0,t1)
+% captures are kept, and runs keeping fewer than the minimum captures are
+% hidden. Optional
+% stacked weather panels (depth / SWE, temperatures, wind) share the linked
+% time axis, and
 % wet / cold snowfall spans shade every panel.
     S = V;
     M = V.M;
@@ -290,20 +293,46 @@ function render_wrscatter(V, T, t0, t1)
     domain_color = V.U.domain_color;
     C = SoopViewerState;
 
-    %% Capture filters (SNR cutoff, overflow exclusion)
-    snr_cut = S.sp_snrcut.Value;
-    [T, snr_ok] = V.U.snrcut_apply(T, snr_cut);
-    if S.cb_ovf.Value && V.U.ovf_usable(T, S.OVF_ok)
-        T = T(~V.U.ovf_mask(T, S.OVF), :);
+    %% Capture filters (overflow exclusion, run-relative SNR, SNR cutoff)
+    % Run ids come from the FULL L1 table and are carried through row masks
+    % applied in pipeline order, then the date range (T is its in-range
+    % subset), so removing a capture never splits or renumbers a run. The
+    % run-relative reference — the run's median or max SNR over its
+    % post-overflow rows, before the absolute cutoff — spans whole runs; the
+    % per-run statistics below use only the in-range captures that pass. A
+    % checked-but-disabled relative box (no usable snr_db) is inert.
+    L   = S.L1;
+    grp_all = M.run_groups(tcol(L));
+    inr = tcol(L) >= t0 & tcol(L) < t1;
+    keep = true(height(L), 1);
+    if S.cb_ovf.Value && V.U.ovf_usable(L, S.OVF_ok)
+        keep = ~V.U.ovf_mask(L, S.OVF);
     end
+    rel_on = false;
+    if S.cb_snrrel.Value && V.U.snrcut_usable(L)
+        [kr, rel_on] = V.U.snrrel_keep(L.snr_db(keep), grp_all(keep), ...
+            S.sp_snrrel_db.Value, char(S.dd_snrrel_ref.Value));
+        if rel_on, keep(keep) = kr; end
+    end
+    snr_cut = S.sp_snrcut.Value;
+    [~, snr_ok, k_snr] = V.U.snrcut_apply(L, snr_cut);
+    sel = inr & keep & k_snr;
+    T = L(sel, :);
     if isempty(T)
-        show_msg('No captures in the selected range pass the SNR / overflow filters.');
+        if rel_on
+            show_msg(['No captures in the selected range pass the SNR / ' ...
+                      'run-relative SNR / overflow filters.']);
+        else
+            show_msg('No captures in the selected range pass the SNR / overflow filters.');
+        end
         return;
     end
 
     %% Runs and per-run statistics
+    % Carried full-table run ids, compacted to 1..n in chronological order
+    % for splitapply.
     t = tcol(T);
-    grp = M.run_groups(t);
+    [~, ~, grp] = unique(grp_all(sel));
     t_run = splitapply(@min, t, grp);
     n_run = splitapply(@numel, t, grp);
     keep = n_run >= S.sp_minrun.Value;
